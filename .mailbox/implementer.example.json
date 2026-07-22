@@ -1,0 +1,10 @@
+{
+  "epoch": 1,
+  "state": "active",
+  "owner": "agent-a",
+  "owner_model": "unknown",
+  "from": null,
+  "to": null,
+  "head": "0000000000000000000000000000000000000000",
+  "dirty_manifest": []
+}
