@@ -1,234 +1,247 @@
 # cocopilot
 
-Run **two GitHub Copilot CLI instances side by side, each on a different
-model**, collaborating as peers on **any repository you point them at**,
-instead of one agent working alone. Coordination happens through a small
-file-based mailbox instead of the two instances talking to each other
-directly.
+**Run two GitHub Copilot CLI instances side by side — different models, one repo, working as peers.**
 
-cocopilot itself stays installed in one place (wherever you cloned it —
-e.g. `C:\Repos1\cocopilot`); the repository you actually pair on (the
-**target repository**) is a separate `-RepoPath` you pass in each time, and
-can be any project on your machine.
+One agent implements while the other reviews and challenges. They coordinate through a tiny file-based mailbox, hand off ownership explicitly, and never edit the same tree at once. You stay the arbiter.
 
-The collaboration protocol itself is in [`COLLABORATION.md`](COLLABORATION.md)
-— it's a generalized port of a personal Claude Code + Codex
-`collaboration.md` operating agreement, adapted for two `copilot` CLI
-sessions (identified as `agent-a` / `agent-b`, each with whatever model you
-give it).
+> No daemon. No state machine. No lock-in. Just a convention ([`COLLABORATION.md`](COLLABORATION.md)), five PowerShell scripts, and three role prompts — pointable at **any local Git repository on your Windows machine**.
+
+---
 
 ## Why
 
-Different models have different strengths. Instead of picking one, run both:
-one instance implements, the other reviews/challenges, and they hand off
-ownership explicitly instead of both editing at once.
+Different models have different strengths. Instead of picking one:
 
-## How it works
-
-- Exactly **one** agent is the active implementer at a time (see
-  `COLLABORATION.md` → "Working roles"). The other only inspects, runs
-  read-only checks, and reviews diffs.
-- Ownership is tracked in `<RepoPath>/.mailbox/implementer.json` — inside
-  the target repository, git-ignored there, per-machine, and the single
-  source of truth for who's active.
-- Turn-by-turn notes (handoff offers/accepts, review findings, status) go
-  in `<RepoPath>/.mailbox/mailbox.md` — also git-ignored and overwritten
-  each turn. Every entry is appended **first** to
-  `<RepoPath>/.mailbox/session.log.md`, the write-once session history
-  (log first, mailbox last — see `COLLABORATION.md` → "Session log");
-  `init-mailbox.ps1 -Force` preserves the log, only `cleanup-mailbox.ps1`
-  removes it.
-- Handoff is manual and explicit: offer → verify → accept (see
-  `COLLABORATION.md` → "Ownership handoff"). There is no timeout takeover.
-- Neither agent has to be manually re-prompted to check the mailbox: each
-  runs `scripts/watch-mailbox.ps1` in the background while it's waiting on
-  its peer, so a completion notification (not the user) wakes it up the
-  moment the other side writes something. See "Listening" below.
-
-## Layout
-
-```
-COLLABORATION.md              the operating agreement both agents follow
-.mailbox/
-  implementer.example.json    tracked template for the ownership record
-  mailbox.example.md          tracked template for the turn scratchpad
-prompts/
-  agent-a.md                  role prompt for the first instance (generic —
-                               works against any target repo)
-  agent-b.md                  role prompt for the second instance
-  verifier.md                 read-only fresh-eyes verification role (see
-                               COLLABORATION.md → "Fresh-eyes verification")
-scripts/
-  _common.ps1                 shared helpers: session-context banner +
-                               Write-MailboxJson (crash-safe ownership writes)
-  init-mailbox.ps1             creates <RepoPath>/.mailbox/*
-  start-agents.ps1             opens two terminals, one copilot each, paired
-                               on <RepoPath>
-  watch-mailbox.ps1            blocks until the peer touches <RepoPath>/.mailbox
-  render-prompt.ps1            prints one agent's ready-to-paste prompt, for
-                               the manual-launch flow
-  cleanup-mailbox.ps1          removes cocopilot's .mailbox/ and its
-                               .gitignore rule from <RepoPath>
-tests/
-  Cocopilot.Tests.ps1          Pester 5 suite (see "Tests" below)
-```
-
-Note: `.mailbox/implementer.json`, `mailbox.md`, and `session.log.md` are
-**not** created here in cocopilot's own repo — they're created inside
-whatever `-RepoPath` you target. cocopilot's own `.mailbox/` only holds the
-two tracked `*.example.*` templates (the session log has no template — it's
-generated with a header by `init-mailbox.ps1`).
+- 🛠️ **One implements** — exactly one agent owns the working tree at a time.
+- 🔍 **One reviews** — the peer inspects real diffs, runs read-only checks, and challenges assumptions *before* the work lands.
+- 🤝 **Explicit handoffs** — ownership transfers by offer → verify → accept, never by timeout or accident.
+- 🧑‍⚖️ **You arbitrate** — disagreements escalate to the human after a bounded number of rounds. By design, nothing here automates you away.
 
 ## Quick start
 
-By default `start-agents.ps1` launches each agent as a plain, literal
-`copilot` invocation with explicit flags — **not** a personal PowerShell
-profile alias — so it works the same for anyone with the `copilot` CLI on
-PATH, no particular `$PROFILE` setup required:
+Three commands. Requirements: Windows PowerShell 5.1 or pwsh 7, Git, and the `copilot` CLI on PATH.
 
 ```powershell
-# 1. Initialize the mailbox inside the repo you actually want to pair on
-C:\Repos1\cocopilot\scripts\init-mailbox.ps1 -RepoPath C:\Repos\some-other-project
+# 1. Initialize the mailbox inside the repo you want to pair on
+C:\Repos\cocopilot\scripts\init-mailbox.ps1 -RepoPath C:\Repos\your-project
 
-# 2. Launch both agents, paired on that same repo
-C:\Repos1\cocopilot\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project
+# 2. Launch both agents (two terminal windows, paired on that repo)
+C:\Repos\cocopilot\scripts\start-agents.ps1 -RepoPath C:\Repos\your-project
+
+# 3. When you're done — remove cocopilot's mailbox footprint (not the agents' project changes)
+C:\Repos\cocopilot\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos\your-project
 ```
 
-That's the whole default: agent-a runs `copilot --model claude-sonnet-5
---effort max --context long_context --autopilot --allow-all ...`, agent-b
-runs the same with `gpt-5.6-terra`. Override the model/flags with
-`-AgentAArgs` / `-AgentBArgs` (arrays), e.g.
-`-AgentAArgs @("--model","gpt-5.4")`.
+That's it. Agent A starts as the implementer on `claude-sonnet-5`, Agent B reviews on `gpt-5.6-terra` (both overridable), and they coordinate through `.mailbox/` inside your target repo — git-ignored automatically, removed completely by cleanup.
 
-If you keep your own profile shortcut functions instead (e.g. a
-`copilot-sonnet` function that already bakes in your preferred flags), use
-those by name and clear the corresponding args array:
+> `-RepoPath` defaults to the current directory, so you can also just `cd` into the target project first.
+
+## How it works
+
+```mermaid
+sequenceDiagram
+    participant A as Agent A (implementer)
+    participant M as .mailbox/
+    participant B as Agent B (reviewer)
+    A->>M: STATUS / HANDOFF_OFFER (log first, mailbox last)
+    Note over B: watch-mailbox.ps1 polls by content hash
+    M-->>B: change detected on next poll → wakes agent
+    B->>M: verdict block / HANDOFF_ACCEPT
+    M-->>A: change detected on next poll → wakes agent
+    Note over A,B: repeat — you arbitrate when they disagree
+```
+
+- **The mailbox is the only channel.** Three files inside the target repo, all git-ignored:
+
+  | File | Purpose | Lifetime |
+  |---|---|---|
+  | `.mailbox/implementer.json` | Who owns the working tree (single source of truth) | Whole-file temp + rename (best-effort torn-write protection) |
+  | `.mailbox/mailbox.md` | Current turn: status, offers, reviews | Overwritten each turn |
+  | `.mailbox/session.log.md` | Complete session history | Append-only, survives everything except cleanup |
+
+- **Nobody polls you.** Each agent runs `watch-mailbox.ps1` in the background while waiting; it blocks until the peer writes, then exits — which wakes the agent like any finished shell command. You never relay "check the mailbox" between windows.
+
+- **Reviews close with a verdict block** — a fixed, greppable format (`VERDICT` / `WORK_UNIT` / `ROUND` / severity counts / findings), so review outcomes are countable and auditable, never buried in prose:
+
+  ```text
+  VERDICT: REVISE
+  WORK_UNIT: fix-auth-retry
+  ROUND: 2/3
+  BLOCKING: 1
+  IMPORTANT: 1
+  OPTIONAL: 0
+  FINDINGS:
+  - [BLOCKING] src/auth.ps1:88 — retry loop swallows the timeout error — rethrow after final attempt
+  - [IMPORTANT] src/auth.ps1:102 — retry count is a magic number — hoist to a named constant
+  ```
+
+- **Disagreement is bounded.** A `REVISE` at `ROUND: 3/3` stops both agents — they write the open options + consequences and wait for **you**. No veto by repetition, no infinite polish loops.
+
+- **Fresh eyes on demand.** Before accepting risky work, render the read-only **verifier** role into a brand-new session: it sees only the repo, the diff, and the verify request — not the session narrative — so its verdict is genuinely independent.
+
+## The roles
+
+| Role | Prompt | Can write? | Job |
+|---|---|---|---|
+| **agent-a** | [`prompts/agent-a.md`](prompts/agent-a.md) | When owner | Starts as implementer |
+| **agent-b** | [`prompts/agent-b.md`](prompts/agent-b.md) | When owner | Starts as reviewer, takes ownership via handoff |
+| **verifier** | [`prompts/verifier.md`](prompts/verifier.md) | **Never** | One-shot fresh-eyes check of a finished work unit |
+
+Every prompt is generic — a **session-context banner** (generated per run) injects what each role needs, so nothing ever hardcodes your repo. Peer-role banners get absolute paths plus ready-to-run watch/init/ownership commands; the verifier banner gets only paths — a read-only role is deliberately never handed a mutating command.
+
+## Command reference
+
+All five user-facing commands live in [`scripts/`](scripts), support `-RepoPath` (default: current directory), and run on **Windows PowerShell 5.1 and pwsh 7**. (`_common.ps1` is an internal helper, not a command.)
+
+### `init-mailbox.ps1` — set up a target repo
 
 ```powershell
-# in your $PROFILE, entirely optional
-function copilot-sonnet {
-    copilot --model claude-sonnet-5 --effort max --context long_context --autopilot --allow-all @args
-}
+.\scripts\init-mailbox.ps1 -RepoPath C:\Repos\your-project
+```
 
-C:\Repos1\cocopilot\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project `
+Creates the ownership record and turn scratchpad from the two tracked templates and generates the session log, all inside the target repo's `.mailbox/`. For a Git target not already ignoring `.mailbox/`, it appends the ignore rule **before** creating any mailbox state — so nothing committable ever exists unprotected, even if init is interrupted.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `-RepoPath` | current dir | Target repository |
+| `-Owner` | `agent-a` | Which role starts as implementer |
+| `-OwnerModel` | `unknown` | Informational label for the owner's model |
+| `-Force` | off | Reset record + scratchpad. **The session log is preserved** (a reset entry is appended) |
+
+Safe to re-run: existing files are left alone without `-Force`.
+
+### `start-agents.ps1` — launch the pair
+
+```powershell
+.\scripts\start-agents.ps1 -RepoPath C:\Repos\your-project
+
+# custom models / flags
+.\scripts\start-agents.ps1 -RepoPath C:\Repos\your-project `
+    -AgentAArgs @("--model","gpt-5.4") `
+    -AgentBArgs @("--model","claude-sonnet-5")
+
+# use your own $PROFILE shortcut functions instead
+.\scripts\start-agents.ps1 -RepoPath C:\Repos\your-project `
     -AgentACommand copilot-sonnet -AgentAArgs @() `
     -AgentBCommand copilot-terra  -AgentBArgs @()
 ```
 
-(`-RepoPath` defaults to the current directory, so `cd`-ing into the target
-project first and omitting it also works.)
+By default, opens two terminal windows, each running a literal `copilot` invocation (no profile magic required) with role prompt + banner injected via `-i`, working directory set to the target repo, and read access back to the cocopilot install via `--add-dir`.
 
-Each window runs in whichever shell you invoked `start-agents.ps1` from
-(pwsh vs Windows PowerShell — see `-ShellExe`; this matters because each
-has its own separate `$PROFILE`, so a personal shortcut function defined in
-one won't exist in the other), inside the target repo:
+| Parameter | Default | Meaning |
+|---|---|---|
+| `-AgentACommand` / `-AgentBCommand` | `copilot` | Executable or profile function per agent |
+| `-AgentAArgs` | `@("--model","claude-sonnet-5","--effort","max","--context","long_context","--autopilot","--allow-all")` | Complete argument array before `-C/-n/-i`; supplying it **replaces** the entire default. Pass `@()` when a profile function supplies its own flags |
+| `-AgentBArgs` | `@("--model","gpt-5.6-terra","--effort","max","--context","long_context","--autopilot","--allow-all")` | Same rules as `-AgentAArgs` |
+| `-NameA` / `-NameB` | `cocopilot-agent-a/b` | Session names (make unique to pair several repos at once) |
+| `-UseWindowsTerminal` | off | `wt.exe` tabs when available; falls back to normal console windows otherwise |
+| `-ShellExe` | current host | Shell for the new windows (pwsh vs powershell matters for `$PROFILE`); `powershell_ise.exe` auto-falls back to `powershell.exe` |
 
-```
-<AgentXCommand> <AgentXArgs> -C <RepoPath> -n <session-name> --add-dir <cocopilot install> -i <banner + prompts/agent-*.md>
-```
-
-`--add-dir <cocopilot install>` guarantees each agent can still read
-`COLLABORATION.md` and invoke `watch-mailbox.ps1`/`init-mailbox.ps1` from
-cocopilot's own location even though `-C` has moved it into the target
-repo. The **banner** prepended to each prompt (see `scripts/_common.ps1`)
-is what tells a generic `prompts/agent-*.md` the concrete target repo path,
-mailbox location, `COLLABORATION.md` path, and exact watch/init commands
-for this run — the prompts themselves never hardcode a repo name.
-
-`agent-a` starts marked active in `implementer.json`, and `agent-b` starts
-by reading `COLLABORATION.md` and the mailbox, then waits for a
-`HANDOFF_OFFER` before writing anything.
-
-You can also skip `start-agents.ps1` and paste a rendered prompt into an
-already-open `copilot` window manually:
+### `watch-mailbox.ps1` — the listening half
 
 ```powershell
-C:\Repos1\cocopilot\scripts\render-prompt.ps1 -Agent b -RepoPath C:\Repos\some-other-project
-# copy the printed text and paste it in
+.\scripts\watch-mailbox.ps1 -RepoPath C:\Repos\your-project                     # wait indefinitely
+.\scripts\watch-mailbox.ps1 -RepoPath C:\Repos\your-project -TimeoutSeconds 1800  # give up after 30 min
 ```
 
-That's the minimal way to bring a second model into an existing session.
-The same flow with `-Agent verifier` renders the read-only fresh-eyes
-verification prompt (paste it into a **new** session — fresh context is
-the point; see `COLLABORATION.md` → "Fresh-eyes verification").
+Blocks until `implementer.json` or `mailbox.md` changes (content hash, not mtime), then exits `0`. Agents run it in the background and get woken by its completion. Exits `1` on timeout. One-shot by design — re-arm after each wake. The session log is deliberately **not** watched (its entry always lands before the mailbox write it accompanies).
 
-## Listening
+| Parameter | Default | Meaning |
+|---|---|---|
+| `-TimeoutSeconds` | `0` (forever) | Exit 1 after this much silence |
+| `-PollIntervalSeconds` | `3` | Hash-check frequency |
 
-Both `prompts/agent-a.md` and `prompts/agent-b.md` instruct their agent to
-run the watch command (given in their session-context banner) as a
-background command whenever it's waiting on its peer (read-only waiting
-for an offer, or waiting for an offer it made to be accepted/reviewed),
-then end its turn with no further tool calls. The script polls the two
-mailbox files by content hash and exits the moment either one changes,
-which surfaces to that agent as a background-command-completion
-notification — the same mechanism a copilot session already uses to
-notice a long-running shell command finishing. The session log is
-deliberately **not** watched: its entry always lands before the
-`mailbox.md` write it accompanies, so watching `mailbox.md` alone is
-sufficient and avoids double-wakes. The agent reads the
-mailbox, reacts, and re-launches the watcher for the next round. You
-should never need to manually tell either window "check the mailbox now."
+### `render-prompt.ps1` — manual launch / add a role to an open session
 
 ```powershell
-# The banner gives each agent this fully resolved command; it does not use
-# the target repository's .\scripts directory.
-& '<cocopilot-install>\scripts\watch-mailbox.ps1' -RepoPath '<target-repository>'                    # wait indefinitely
-& '<cocopilot-install>\scripts\watch-mailbox.ps1' -RepoPath '<target-repository>' -TimeoutSeconds 1800  # give up after 30 min of silence
+.\scripts\render-prompt.ps1 -Agent b -RepoPath C:\Repos\your-project        # paste into a copilot window
+.\scripts\render-prompt.ps1 -Agent verifier -RepoPath C:\Repos\your-project  # paste into a NEW session
 ```
 
-## Cleanup
+Prints one role's paste-ready prompt (banner + role file). The verifier's banner deliberately contains **no** mutating commands — a read-only role is never handed a loaded gun.
 
-cocopilot's rule is simple: **the target repository should never end up
-with anything cocopilot-related committed to it.** `init-mailbox.ps1`
-already prevents this going in (it appends a `.mailbox/` `.gitignore` rule
-before anything is written), but if you want to fully remove cocopilot's
-footprint from a target repo — the `.mailbox/` directory and that
-`.gitignore` rule, leaving everything else in the repo untouched — run:
+| Parameter | Values | Meaning |
+|---|---|---|
+| `-Agent` | `a` · `b` · `verifier` | Which role to render |
+
+### `cleanup-mailbox.ps1` — leave no trace
 
 ```powershell
-C:\Repos1\cocopilot\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos\some-other-project
-# add -WhatIf first if you want to preview what would be removed
+.\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos\your-project          # remove everything
+.\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos\your-project -WhatIf  # preview first
 ```
 
-It also defensively checks for (and un-tracks, without auto-committing)
-any `.mailbox/` paths that somehow ended up in the target repo's git
-index — this should never happen, but is checked anyway.
+Removes `.mailbox/` and exactly the `.gitignore` block init added (your own rules survive, CRLF or LF). Defensively un-tracks any `.mailbox/` paths that somehow reached the git index — staged only, never auto-committed. Supports `-WhatIf` / `-Confirm`.
+
+## The protocol in 60 seconds
+
+Full text: [`COLLABORATION.md`](COLLABORATION.md) — the binding agreement both agents read on startup.
+
+1. **One implementer at a time.** The peer inspects, runs non-mutating checks, reviews actual diffs.
+2. **Handoff = offer → verify → accept**, recorded in the mailbox with a monotonic epoch pinned to git HEAD. No timeout takeover — a vanished owner is *your* call.
+3. **Every review closes with the verdict block.** `REVISE` is mandatory while any Blocking finding is open.
+4. **Rounds are counted and capped** (`ROUND: n/3`). A `REVISE` at the cap stops further revisions — both agents hand you the open options and consequences; an unresolved material tradeoff can escalate to you even earlier.
+5. **Every mailbox entry is logged first** to the append-only session log — the full history survives even a `-Force` re-init, and `grep '^VERDICT:'` reconstructs every review outcome of a session.
+6. **Fresh-eyes verification** for risky/final work: a new session, read-only, sees only repo + diff + request. Skippable for trivial changes.
+7. **Evidence beats identity.** Repository facts outrank confidence, verbosity, or persistence — for both models.
+
+## Layout
+
+```
+README.md                     you are here
+COLLABORATION.md              the operating agreement both agents follow
+.gitignore                    keeps generated .mailbox state out of this repo
+.mailbox/
+  implementer.example.json    tracked template — ownership record
+  mailbox.example.md          tracked template — turn scratchpad
+prompts/
+  agent-a.md · agent-b.md     the two peer roles (generic, banner-driven)
+  verifier.md                 read-only fresh-eyes role
+scripts/
+  _common.ps1                 banner builder + Write-MailboxJson (whole-file
+                               JSON writer, temp + rename)
+  init-mailbox.ps1            create <RepoPath>/.mailbox/*
+  start-agents.ps1            launch both copilot windows
+  watch-mailbox.ps1           block until the peer writes
+  render-prompt.ps1           print a role prompt for manual paste
+  cleanup-mailbox.ps1         remove cocopilot's footprint from a target
+tests/
+  Cocopilot.Tests.ps1         Pester 5 suite (18 tests, both hosts)
+```
+
+The real `.mailbox/` state is created **inside each target repo** (git-ignored there); cocopilot's own repo only tracks the two `*.example.*` templates.
 
 ## Tests
 
-`tests/Cocopilot.Tests.ps1` is a Pester 5 suite, black-box against fake
-target repositories, covering init (creation, idempotency, `-Force`
-log-preservation), the watcher (wake on either watched file, no wake on
-log-only appends — run as a bounded child process), cleanup (exact block
-removal, CRLF and LF), prompt rendering for all three roles, and
-`Write-MailboxJson` (replacement, failure cleanup, directory guard).
+18 black-box Pester 5 tests cover init (creation, idempotency, `-Force` log preservation), the watcher (child-process wake/no-wake), cleanup (exact block removal, CRLF + LF), all three prompt renders, and whole-file JSON replacement with temp-file cleanup.
 
-**Prerequisite:** Pester 5 must be installed side-by-side for *each* host
-you run the suite under — Windows PowerShell 5.1 ships only inbox Pester
-3.4, so an unqualified `Invoke-Pester` there runs the wrong major version
-(`Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Scope
-CurrentUser -Force -SkipPublisherCheck`).
-
-Run it fail-closed — same command body under both hosts
-(`powershell.exe -NoProfile -Command "…"` and `pwsh -NoProfile -Command "…"`):
+**Prerequisite:** Pester 5 side-by-side per host — Windows PowerShell 5.1 ships inbox Pester 3.4 only:
 
 ```powershell
-$ErrorActionPreference='Stop'; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw 'Pester 5 required' }; Invoke-Pester -Path tests -EnableExit
+Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Scope CurrentUser -Force -SkipPublisherCheck
 ```
 
-## Notes
+Run fail-closed on both hosts (copy/paste as-is from the repo root):
 
-- Model/effort/context/permission flags default to literal `copilot ...`
-  invocations baked into `start-agents.ps1` (see `-AgentAArgs`/
-  `-AgentBArgs`) — not a personal profile shortcut — so the tool works the
-  same for anyone with the `copilot` CLI on PATH. `start-agents.ps1` only
-  ever adds `-C`, `-n`, `--add-dir`, `-i` after your command/args.
-- `init-mailbox.ps1` appends a `.mailbox/` rule to the target repo's own
-  `.gitignore` if it's a git repo and doesn't already ignore it — the
-  per-machine mailbox state should never end up committed there. Use
-  `cleanup-mailbox.ps1` (above) to remove it again when you're done.
-- Running against several target repos at once is fine — give each launch
-  distinct `-NameA`/`-NameB` so session names don't collide; the mailboxes
-  themselves are already isolated per `-RepoPath`.
-- Nothing here automates the handoff — by design (see `COLLABORATION.md`).
-  A human (you) resolves disagreements and any ownership ambiguity.
+```powershell
+# single-quoted so the outer shell doesn't expand $-variables before they reach the child host
+powershell.exe -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw "Pester 5 required" }; Invoke-Pester -Path tests -EnableExit'
+
+pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw "Pester 5 required" }; Invoke-Pester -Path tests -EnableExit'
+```
+
+## FAQ
+
+**Does this need my repo to be on GitHub?** No. Any local Git repository works; cocopilot's scripts never require or access a Git remote. (The Copilot CLI itself talks to its own service, as always.)
+
+**Can I pair on several repos at once?** Yes — mailboxes are per-`-RepoPath`. Give each launch distinct `-NameA`/`-NameB` so session names don't collide.
+
+**What if the two agents deadlock or an owner vanishes?** Review disagreements are bounded by the round cap — a `REVISE` at `3/3` forces both agents to stop and hand you the decision. A vanished *owner* is different: nothing takes over by timeout (deliberately), so a watcher may wait indefinitely — inspect the tree, decide ownership yourself, and if needed re-run init with `-Force` (history survives in the session log).
+
+**Why PowerShell?** The Copilot CLI ships on Windows first-class; the scripts run identically on Windows PowerShell 5.1 and pwsh 7 (byte-identical mailbox writes on both — tested).
+
+**What does cocopilot deliberately NOT do?** No state machine, no schema validation, no file locking, no timeout takeover, no daemon, no committed artifacts in your repos. Those solve *unattended* operation — that's [claudex](https://github.com/David-c0degeek/claudex) territory: a deterministic state-machine orchestrator for headless or live Claude Code + Codex runs. cocopilot is its lightweight sibling: interactive pairing with you as the arbiter.
+
+---
+
+*The protocol is a generalized port of the personal Claude Code + Codex `collaboration.md` operating agreement behind [claudex](https://github.com/David-c0degeek/claudex) — and this repo's current form was itself co-authored and adversarially reviewed by that exact pairing.*
