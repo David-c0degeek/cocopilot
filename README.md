@@ -1,4 +1,6 @@
-# cocopilot
+<p align="center">
+  <img src="assets/cocopilot.png" alt="CocoPilot — a small bird in aviator goggles" width="340">
+</p>
 
 **Run two GitHub Copilot CLI instances side by side — different models, one repo, working as peers.**
 
@@ -191,6 +193,8 @@ Full text: [`COLLABORATION.md`](COLLABORATION.md) — the binding agreement both
 README.md                     you are here
 COLLABORATION.md              the operating agreement both agents follow
 .gitignore                    keeps generated .mailbox state out of this repo
+assets/
+  cocopilot.png               the logo
 .mailbox/
   implementer.example.json    tracked template — ownership record
   mailbox.example.md          tracked template — turn scratchpad
