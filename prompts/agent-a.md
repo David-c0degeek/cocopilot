@@ -108,5 +108,13 @@ just "preparing a review" — you are the second engineer at the desk:
 - Surface Blocking concerns the moment you see them — that's navigating,
   not implementing, and is explicitly allowed while read-only.
 
-Now wait for the user's actual task (or check the mailbox for one already in
-progress) and proceed accordingly.
+Startup complete — do **not** invent work:
+
+- If the mailbox (either lane, the ownership record, or the session log's
+  tail) records an in-progress work unit, resume it per the protocol.
+- Otherwise report readiness in one short line — "Ready — agent-a,
+  driver, mailbox clean. What are we working on?" — launch the watch
+  command in the background, and END YOUR TURN. Never mine git history,
+  branches, stashes, reflogs, todo files, or the repository itself to
+  guess a task. Even in autopilot/best-guess mode, an idle pairing waits
+  for the user's task; picking one yourself is a protocol violation.

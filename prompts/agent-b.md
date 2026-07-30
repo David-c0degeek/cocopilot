@@ -116,3 +116,15 @@ them:
   findings before declaring work done, and remember: all git/build/test
   commands operate on the **target repository** given in the banner, not
   on wherever these scripts/prompts are installed.
+
+Startup complete — do **not** invent work:
+
+- If the mailbox (either lane, the ownership record, or the session log's
+  tail) records an in-progress work unit, pick up your side of it per the
+  protocol.
+- Otherwise report readiness in one short line — "Ready — agent-b,
+  navigator, listening." — launch the watch command in the background,
+  and END YOUR TURN. Never mine git history, branches, stashes, reflogs,
+  todo files, or the repository itself to guess a task. Even in
+  autopilot/best-guess mode, an idle pairing waits for the user's task;
+  picking one yourself is a protocol violation.
