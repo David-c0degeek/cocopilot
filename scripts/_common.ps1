@@ -63,7 +63,8 @@ function Get-CocopilotSessionBanner {
     param(
         [Parameter(Mandatory)][string]$RepoPath,
         [Parameter(Mandatory)][string]$CocopilotRoot,
-        [Parameter(Mandatory)][ValidateSet("agent-a", "agent-b", "verifier")][string]$AgentRole
+        [Parameter(Mandatory)][ValidateSet("agent-a", "agent-b", "verifier")][string]$AgentRole,
+        [string]$ContextRoot
     )
 
     $collaborationPath = Join-Path $CocopilotRoot "COLLABORATION.md"
@@ -71,7 +72,7 @@ function Get-CocopilotSessionBanner {
     $initScript = Join-Path $CocopilotRoot "scripts\init-mailbox.ps1"
     $commonScript = Join-Path $CocopilotRoot "scripts\_common.ps1"
     $implementerJson = Join-Path $RepoPath ".mailbox\implementer.json"
-    $watchCmd = "& $(ConvertTo-SingleQuoted $watchScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath)"
+    $watchCmd = "& $(ConvertTo-SingleQuoted $watchScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath) -Role $AgentRole"
     $initCmd = "& $(ConvertTo-SingleQuoted $initScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath)"
     $ownershipCmd = ". $(ConvertTo-SingleQuoted $commonScript); Write-MailboxJson -Path $(ConvertTo-SingleQuoted $implementerJson) -Object `$record"
 
@@ -80,9 +81,21 @@ function Get-CocopilotSessionBanner {
 
 - Your role: $AgentRole
 - Target repository: $RepoPath
-- Mailbox: $RepoPath\.mailbox\ (implementer.json, mailbox.md, session.log.md)
+- Mailbox: $RepoPath\.mailbox\ (implementer.json, agent-a.md, agent-b.md, session.log.md)
 - Collaboration protocol: $collaborationPath
 "@
+
+    if ($ContextRoot) {
+        $core += @"
+
+- Workspace context root (READ-ONLY search scope): $ContextRoot
+  You may read anything under it — sibling repositories, shared contracts,
+  cross-repo callers — for context and evidence. Ownership, epochs, diffs,
+  reviews, and EVERY write remain bound to the target repository above;
+  sibling repositories are evidence, never workspace (see the protocol's
+  "Workspace context" section).
+"@
+    }
 
     if ($AgentRole -eq "verifier") {
         # Read-only role: deliberately gets NO watch/init/ownership
@@ -98,9 +111,17 @@ function Get-CocopilotSessionBanner {
 "@
     }
 
+    $peerRole = if ($AgentRole -eq "agent-a") { "agent-b" } else { "agent-a" }
+    $myLane = Join-Path $RepoPath ".mailbox\$AgentRole.md"
+    $peerLane = Join-Path $RepoPath ".mailbox\$peerRole.md"
+
     return $core + @"
 
-- Watch command (run in the background whenever you're idle/waiting):
+- Your lane (the ONLY mailbox file you may write): $myLane
+- Peer lane (read-only to you): $peerLane
+
+- Watch command (wakes only on peer-lane/ownership changes — run in the
+  background whenever you're blocked waiting on the peer):
   $watchCmd
 - Init command (only if the mailbox files above don't exist yet):
   $initCmd

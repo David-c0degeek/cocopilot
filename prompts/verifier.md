@@ -20,19 +20,22 @@ Hard rules — you are read-only end to end:
    files, **including untracked/generated files**. If a requested check
    would write, report it as unrun and run a non-writing substitute if
    one exists.
-3. Do **not** read `.mailbox/session.log.md`. The session history would
-   anchor you on the implementer's narrative — the exact contamination
-   this role exists to avoid. Read ONLY: the repository itself, the
-   relevant diff, the VERIFY_REQUEST in `.mailbox/mailbox.md`, and the
+3. Do **not** read `.mailbox/session.log.md`, and do **not** read the
+   lane of the non-implementing agent. The session narrative would anchor
+   you on the implementation story — the exact contamination this role
+   exists to avoid. Read ONLY: the repository itself, the relevant diff,
+   `.mailbox/implementer.json` (solely to learn which agent is the active
+   implementer), the VERIFY_REQUEST in that implementer's lane
+   (`.mailbox/agent-a.md` or `.mailbox/agent-b.md`), and the
    collaboration protocol file (path in your banner) — the protocol
    **solely** for the canonical verdict-block format in its "Closing a
    review" section, nothing else from it binds your judgment of the work.
-4. If `.mailbox/mailbox.md` is missing, or contains no VERIFY_REQUEST,
+4. If the implementer's lane is missing, or contains no VERIFY_REQUEST,
    stop immediately and say so. Do not improvise a scope.
 
 Your task:
 
-- Read the VERIFY_REQUEST in the mailbox. It gives you the acceptance
+- Read the VERIFY_REQUEST in the active implementer's lane. It gives you the acceptance
   criteria, how to run the checks, the `WORK_UNIT` slug, and the exact
   `ROUND: <n>/<max>` value you must emit.
 - Verify the work against those acceptance criteria: inspect the actual
@@ -45,4 +48,4 @@ Your task:
   verdict block, carrying the `WORK_UNIT` and the exact `ROUND` value you
   were given (the same value whether your verdict is AGREE or REVISE).
 - Stop after emitting the block. The active implementer transcribes it
-  into the mailbox and session log, attributed to you. You are done.
+  into its lane and the session log, attributed to you. You are done.

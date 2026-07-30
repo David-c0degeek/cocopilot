@@ -32,15 +32,25 @@
     watch/init commands to run — all resolved to this cocopilot install, so
     the prompts themselves never need to hardcode a repo name or path.
 
-    Agent A starts as the active implementer (per <RepoPath>/.mailbox, see
-    init-mailbox.ps1). Agent B starts by reading COLLABORATION.md and the
-    mailbox, then waiting for a HANDOFF_OFFER before writing anything.
+    Agent A starts as the active implementer/driver (per
+    <RepoPath>/.mailbox, see init-mailbox.ps1). Agent B starts as the
+    navigator: it reads COLLABORATION.md and the mailbox, thinks along in
+    its own lane (huddle challenges, syncs acks, rubber-duck answers), and
+    only writes repository files after accepting a HANDOFF_OFFER.
 
     Run the init-mailbox.ps1 script from this cocopilot install with
     -RepoPath <RepoPath> first if that repository's mailbox doesn't exist yet.
 
 .PARAMETER RepoPath
     The repository to pair on. Defaults to the current directory.
+
+.PARAMETER ContextRoot
+    Optional workspace root (e.g. a folder containing many sibling
+    repositories) granted to both agents as a READ-ONLY search scope, via
+    an extra --add-dir and a banner note. Ownership, diffs, and all writes
+    remain bound to -RepoPath; use this when the pair needs cross-repo
+    context, not cross-repo editing. See COLLABORATION.md "Workspace
+    context".
 
 .PARAMETER AgentACommand
     Executable/command to run for agent-a. Defaults to "copilot" (the real
@@ -91,6 +101,7 @@
 #>
 param(
     [string]$RepoPath = (Get-Location).Path,
+    [string]$ContextRoot,
     [string]$AgentACommand = "copilot",
     [string[]]$AgentAArgs = @("--model", "claude-sonnet-5", "--effort", "max", "--context", "long_context", "--autopilot", "--allow-all"),
     [string]$AgentBCommand = "copilot",
@@ -116,15 +127,15 @@ if ((Split-Path -Leaf $ShellExe) -ieq "powershell_ise.exe") {
 }
 
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
+if ($ContextRoot) { $ContextRoot = (Resolve-Path -LiteralPath $ContextRoot).Path }
 $cocopilotRoot = Split-Path -Parent $PSScriptRoot
 $promptA = Join-Path $cocopilotRoot "prompts\agent-a.md"
 $promptB = Join-Path $cocopilotRoot "prompts\agent-b.md"
 $initMailboxScript = Join-Path $PSScriptRoot "init-mailbox.ps1"
-$implementerPath = Join-Path $RepoPath ".mailbox\implementer.json"
-$mailboxPath = Join-Path $RepoPath ".mailbox\mailbox.md"
-$sessionLogPath = Join-Path $RepoPath ".mailbox\session.log.md"
+$mailboxFiles = @("implementer.json", "agent-a.md", "agent-b.md", "session.log.md") |
+    ForEach-Object { Join-Path $RepoPath ".mailbox\$_" }
 
-if (-not (Test-Path -LiteralPath $implementerPath) -or -not (Test-Path -LiteralPath $mailboxPath) -or -not (Test-Path -LiteralPath $sessionLogPath)) {
+if (@($mailboxFiles | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0) {
     $initCommand = "& $(ConvertTo-SingleQuoted $initMailboxScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath)"
     throw "Mailbox state for '$RepoPath' is incomplete; run $initCommand first."
 }
@@ -135,6 +146,7 @@ foreach ($p in @($promptA, $promptB)) {
 function Start-CopilotAgent {
     param(
         [string]$RepoPath,
+        [string]$ContextRoot,
         [string]$CocopilotRoot,
         [string]$AgentCommand,
         [string[]]$AgentArgs,
@@ -145,7 +157,7 @@ function Start-CopilotAgent {
         [switch]$UseWindowsTerminal
     )
 
-    $banner = Get-CocopilotSessionBanner -RepoPath $RepoPath -CocopilotRoot $CocopilotRoot -AgentRole $AgentRole
+    $banner = Get-CocopilotSessionBanner -RepoPath $RepoPath -CocopilotRoot $CocopilotRoot -AgentRole $AgentRole -ContextRoot $ContextRoot
     $fullPrompt = $banner + (Get-Content -LiteralPath $PromptPath -Raw)
 
     $agentCommandQ = ConvertTo-SingleQuoted $AgentCommand
@@ -157,8 +169,11 @@ function Start-CopilotAgent {
 
     # --add-dir grants read/run access to cocopilot's own install (for
     # COLLABORATION.md and the watch/init scripts) even if AgentCommand's
-    # underlying alias doesn't already pass --allow-all-paths.
-    $innerScript = ("& $agentCommandQ " + $(if ($agentArgsQ) { "$agentArgsQ " } else { "" }) + "-C $repoQ -n $nameQ --add-dir $addDirQ -i $promptQ").Trim()
+    # underlying alias doesn't already pass --allow-all-paths. A second
+    # --add-dir opens the optional workspace context root; the read-only
+    # discipline for it is the protocol's, not the CLI's.
+    $contextDirArg = if ($ContextRoot) { "--add-dir $(ConvertTo-SingleQuoted $ContextRoot) " } else { "" }
+    $innerScript = ("& $agentCommandQ " + $(if ($agentArgsQ) { "$agentArgsQ " } else { "" }) + "-C $repoQ -n $nameQ --add-dir $addDirQ $contextDirArg-i $promptQ").Trim()
 
     # -EncodedCommand avoids all nested-quoting problems (works regardless
     # of spaces/quotes in RepoPath or the prompt text) and still loads
@@ -183,8 +198,8 @@ if (-not (Get-Command $AgentBCommand -ErrorAction SilentlyContinue)) {
     Write-Warning "'$AgentBCommand' isn't a recognized command in this session; make sure it's on PATH (or defined in your `$PROFILE if you passed a personal shortcut)."
 }
 
-Start-CopilotAgent -RepoPath $RepoPath -CocopilotRoot $cocopilotRoot -AgentCommand $AgentACommand -AgentArgs $AgentAArgs -Name $NameA -PromptPath $promptA -AgentRole "agent-a" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal
+Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentACommand -AgentArgs $AgentAArgs -Name $NameA -PromptPath $promptA -AgentRole "agent-a" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal
 Start-Sleep -Seconds 1
-Start-CopilotAgent -RepoPath $RepoPath -CocopilotRoot $cocopilotRoot -AgentCommand $AgentBCommand -AgentArgs $AgentBArgs -Name $NameB -PromptPath $promptB -AgentRole "agent-b" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal
+Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentBCommand -AgentArgs $AgentBArgs -Name $NameB -PromptPath $promptB -AgentRole "agent-b" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal
 
 Write-Host "Launched $NameA via '$AgentACommand' and $NameB via '$AgentBCommand' (shell: $ShellExe), paired on $RepoPath." -ForegroundColor Green

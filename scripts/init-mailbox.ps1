@@ -2,8 +2,8 @@
 <#
 .SYNOPSIS
     Initializes the local (git-ignored) mailbox state for a target
-    repository: <RepoPath>/.mailbox/implementer.json, mailbox.md, and
-    session.log.md.
+    repository: <RepoPath>/.mailbox/implementer.json, the per-agent lane
+    scratchpads agent-a.md / agent-b.md, and session.log.md.
 
 .DESCRIPTION
     cocopilot itself stays centrally installed (this script's own location);
@@ -12,7 +12,7 @@
     .mailbox/*.example.* files, but the real, git-ignored files are written
     into <RepoPath>/.mailbox/, stamped with that repository's current git
     HEAD. Safe to re-run: it will not overwrite existing implementer.json or
-    mailbox.md unless -Force is passed. The write-once session history
+    lane files unless -Force is passed. The write-once session history
     (session.log.md) is created if missing and is PRESERVED even with
     -Force — a session-reset entry is appended instead; only
     cleanup-mailbox.ps1 removes it (with the whole .mailbox/ directory).
@@ -33,7 +33,16 @@
     Informational label for which model agent-a happens to be running.
 
 .PARAMETER Force
-    Overwrite existing .mailbox/implementer.json and .mailbox/mailbox.md.
+    Overwrite existing .mailbox/implementer.json and the two lane files.
+
+.PARAMETER AllowNonGit
+    Permit initializing a target that is not a git repository. Without
+    this, a non-git target is refused: the protocol pins ownership to git
+    HEAD/status, so on a non-git tree every handoff anchor degrades to a
+    zero SHA and the peer can't verify anything. The usual reason to point
+    at a non-git folder — a workspace containing many repos — is better
+    served by pairing on ONE repo and passing the workspace as
+    start-agents.ps1 -ContextRoot (read-only search scope).
 
 .EXAMPLE
     .\scripts\init-mailbox.ps1 -RepoPath C:\Repos\some-other-project
@@ -42,7 +51,8 @@ param(
     [string]$RepoPath = (Get-Location).Path,
     [string]$Owner = "agent-a",
     [string]$OwnerModel = "unknown",
-    [switch]$Force
+    [switch]$Force,
+    [switch]$AllowNonGit
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,10 +64,10 @@ $cocopilotRoot = Split-Path -Parent $PSScriptRoot
 
 $mailboxDir = Join-Path $RepoPath ".mailbox"
 $implementerPath = Join-Path $mailboxDir "implementer.json"
-$mailboxPath = Join-Path $mailboxDir "mailbox.md"
+$lanePaths = @("agent-a.md", "agent-b.md") | ForEach-Object { Join-Path $mailboxDir $_ }
 $sessionLogPath = Join-Path $mailboxDir "session.log.md"
 $implementerTemplate = Join-Path $cocopilotRoot ".mailbox\implementer.example.json"
-$mailboxTemplate = Join-Path $cocopilotRoot ".mailbox\mailbox.example.md"
+$laneTemplate = Join-Path $cocopilotRoot ".mailbox\lane.example.md"
 
 # Safety net FIRST — before anything under .mailbox/ exists: keep the
 # per-machine mailbox out of the target repo's real history, the same way
@@ -75,8 +85,13 @@ if ($isGitRepo) {
         Add-Content -LiteralPath $gitignorePath -Value "`n# Per-machine cocopilot mailbox state (see cocopilot's own README/COLLABORATION.md)`n.mailbox/"
         Write-Host "Appended a .mailbox/ ignore rule to $gitignorePath" -ForegroundColor Green
     }
+} elseif (-not $AllowNonGit) {
+    throw ("'$RepoPath' is not a git repository, so the protocol's ownership anchors (HEAD, status, epoch) " +
+        "can't work there. Pair on ONE git repository; if you want cross-repo context from a workspace " +
+        "folder of many repos, pass that folder as start-agents.ps1 -ContextRoot instead (read-only " +
+        "search scope). Use -AllowNonGit to override deliberately.")
 } else {
-    Write-Warning "$RepoPath doesn't look like a git repository; skipped the .gitignore safety check. Make sure .mailbox/ never gets committed there."
+    Write-Warning "$RepoPath doesn't look like a git repository (-AllowNonGit): ownership anchors degrade to a zero SHA, handoff verification can't check git state, and the .gitignore safety check is skipped. Make sure .mailbox/ never gets committed there."
 }
 
 [System.IO.Directory]::CreateDirectory($mailboxDir) | Out-Null
@@ -100,11 +115,13 @@ if ((Test-Path -LiteralPath $implementerPath) -and -not $Force) {
     Write-Host "Wrote $implementerPath (owner=$Owner, head=$($head.Substring(0, [Math]::Min(7,$head.Length))))" -ForegroundColor Green
 }
 
-if ((Test-Path -LiteralPath $mailboxPath) -and -not $Force) {
-    Write-Host "mailbox.md already exists, leaving it as-is (use -Force to reset)." -ForegroundColor Yellow
-} else {
-    [System.IO.File]::Copy($mailboxTemplate, $mailboxPath, $true)
-    Write-Host "Wrote $mailboxPath" -ForegroundColor Green
+foreach ($lanePath in $lanePaths) {
+    if ((Test-Path -LiteralPath $lanePath) -and -not $Force) {
+        Write-Host "$(Split-Path -Leaf $lanePath) already exists, leaving it as-is (use -Force to reset)." -ForegroundColor Yellow
+    } else {
+        [System.IO.File]::Copy($laneTemplate, $lanePath, $true)
+        Write-Host "Wrote $lanePath" -ForegroundColor Green
+    }
 }
 
 # Write-once session history: created once, preserved forever after — even
@@ -117,7 +134,7 @@ if (-not (Test-Path -LiteralPath $sessionLogPath)) {
     [System.IO.File]::WriteAllText($sessionLogPath, $logHeader, $utf8NoBom)
     Write-Host "Wrote $sessionLogPath" -ForegroundColor Green
 } elseif ($Force) {
-    $resetEntry = "`n## $nowUtc init`n- session reset (-Force): implementer.json and mailbox.md reinitialized; log preserved`n"
+    $resetEntry = "`n## $nowUtc init`n- session reset (-Force): implementer.json and lane files reinitialized; log preserved`n"
     [System.IO.File]::AppendAllText($sessionLogPath, $resetEntry, $utf8NoBom)
     Write-Host "Preserved $sessionLogPath (appended a session-reset entry)." -ForegroundColor Yellow
 } else {

@@ -18,13 +18,20 @@
 .PARAMETER RepoPath
     The repository being paired on. Defaults to the current directory.
 
+.PARAMETER ContextRoot
+    Optional workspace root granted as a READ-ONLY search scope in the
+    banner (see start-agents.ps1 -ContextRoot and COLLABORATION.md
+    "Workspace context"). When pasting manually, also launch the copilot
+    window with --add-dir <ContextRoot> so the CLI can actually reach it.
+
 .EXAMPLE
     .\scripts\render-prompt.ps1 -Agent b -RepoPath C:\Repos\some-other-project
     # copy the output and paste it into your second copilot window
 #>
 param(
     [Parameter(Mandatory)][ValidateSet("a", "b", "verifier")][string]$Agent,
-    [string]$RepoPath = (Get-Location).Path
+    [string]$RepoPath = (Get-Location).Path,
+    [string]$ContextRoot
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +39,7 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "_common.ps1")
 
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
+if ($ContextRoot) { $ContextRoot = (Resolve-Path -LiteralPath $ContextRoot).Path }
 $cocopilotRoot = Split-Path -Parent $PSScriptRoot
 # Explicit three-way mapping — role id and prompt filename don't follow one
 # shared pattern ("verifier" has no "agent-" prefix), so map both by name.
@@ -44,5 +52,5 @@ $promptPath = Join-Path $cocopilotRoot "prompts\$promptFile"
 
 if (-not (Test-Path -LiteralPath $promptPath)) { throw "Missing prompt file: $promptPath" }
 
-$banner = Get-CocopilotSessionBanner -RepoPath $RepoPath -CocopilotRoot $cocopilotRoot -AgentRole $agentRole
+$banner = Get-CocopilotSessionBanner -RepoPath $RepoPath -CocopilotRoot $cocopilotRoot -AgentRole $agentRole -ContextRoot $ContextRoot
 $banner + (Get-Content -LiteralPath $promptPath -Raw)

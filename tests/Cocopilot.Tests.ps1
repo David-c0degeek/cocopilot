@@ -42,13 +42,15 @@ BeforeAll {
         param(
             [Parameter(Mandatory)][string]$RepoPath,
             [Parameter(Mandatory)][int]$TimeoutSeconds,
+            [string]$Role,
             [scriptblock]$AfterBaseline
         )
         $job = Start-Job -ScriptBlock {
-            param($watch, $repo, $timeout)
-            $out = & $watch -RepoPath $repo -TimeoutSeconds $timeout -PollIntervalSeconds 1 *>&1 | Out-String
+            param($watch, $repo, $timeout, $role)
+            $extra = if ($role) { @{ Role = $role } } else { @{} }
+            $out = & $watch -RepoPath $repo -TimeoutSeconds $timeout -PollIntervalSeconds 1 @extra *>&1 | Out-String
             [pscustomobject]@{ Output = $out; ExitCode = $LASTEXITCODE }
-        } -ArgumentList $script:watchScript, $RepoPath, $TimeoutSeconds
+        } -ArgumentList $script:watchScript, $RepoPath, $TimeoutSeconds, $Role
         Start-Sleep -Seconds 3   # let the child take its baseline hash
         if ($AfterBaseline) { & $AfterBaseline }
         $null = Wait-Job $job -Timeout ($TimeoutSeconds + 15)
@@ -63,7 +65,8 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         $t = New-FakeTarget "init-clean"
         & $script:initScript -RepoPath $t *>$null
         Test-Path (Join-Path $t ".mailbox\implementer.json") | Should -BeTrue
-        Test-Path (Join-Path $t ".mailbox\mailbox.md") | Should -BeTrue
+        Test-Path (Join-Path $t ".mailbox\agent-a.md") | Should -BeTrue
+        Test-Path (Join-Path $t ".mailbox\agent-b.md") | Should -BeTrue
         Test-Path (Join-Path $t ".mailbox\session.log.md") | Should -BeTrue
         (Get-Content -Raw (Join-Path $t ".gitignore")) | Should -Match '(?m)^\.mailbox/\s*$'
         $record = Get-Content -Raw (Join-Path $t ".mailbox\implementer.json") | ConvertFrom-Json
@@ -74,12 +77,12 @@ Describe "init-mailbox.ps1 (R0/R1)" {
     It "is idempotent without -Force and does not duplicate the ignore rule" {
         $t = New-FakeTarget "init-idem"
         & $script:initScript -RepoPath $t *>$null
-        $mailboxFile = Join-Path $t ".mailbox\mailbox.md"
-        [System.IO.File]::AppendAllText($mailboxFile, "user content survives`n", $script:utf8NoBom)
+        $laneFile = Join-Path $t ".mailbox\agent-a.md"
+        [System.IO.File]::AppendAllText($laneFile, "user content survives`n", $script:utf8NoBom)
         $recordHashBefore = (Get-FileHash (Join-Path $t ".mailbox\implementer.json")).Hash
         & $script:initScript -RepoPath $t *>$null
         (Get-FileHash (Join-Path $t ".mailbox\implementer.json")).Hash | Should -Be $recordHashBefore
-        (Get-Content -Raw $mailboxFile) | Should -Match "user content survives"
+        (Get-Content -Raw $laneFile) | Should -Match "user content survives"
         ([regex]::Matches((Get-Content -Raw (Join-Path $t ".gitignore")), '(?m)^\.mailbox/\s*$')).Count | Should -Be 1
     }
 
@@ -100,14 +103,30 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         $bytes = [System.IO.File]::ReadAllBytes((Join-Path $t ".mailbox\session.log.md"))
         $bytes[0] | Should -Not -Be 0xEF
     }
+
+    It "refuses a non-git target without -AllowNonGit and points at -ContextRoot" {
+        $t = Join-Path $TestDrive "init-nongit"
+        New-Item -ItemType Directory -Force -Path $t | Out-Null
+        { & $script:initScript -RepoPath $t *>$null } | Should -Throw "*ContextRoot*"
+        Test-Path (Join-Path $t ".mailbox") | Should -BeFalse
+    }
+
+    It "initializes a non-git target with -AllowNonGit (zero SHA, no .gitignore)" {
+        $t = Join-Path $TestDrive "init-nongit-allowed"
+        New-Item -ItemType Directory -Force -Path $t | Out-Null
+        & $script:initScript -RepoPath $t -AllowNonGit *>$null
+        $record = Get-Content -Raw (Join-Path $t ".mailbox\implementer.json") | ConvertFrom-Json
+        $record.head | Should -Be ("0" * 40)
+        Test-Path (Join-Path $t ".gitignore") | Should -BeFalse
+    }
 }
 
 Describe "watch-mailbox.ps1 (R1) - child process" {
-    It "wakes on a one-byte change to mailbox.md" {
-        $t = New-FakeTarget "watch-mailbox"
+    It "wakes on a one-byte change to a lane file (no -Role: both watched)" {
+        $t = New-FakeTarget "watch-lane"
         & $script:initScript -RepoPath $t *>$null
         $result = Invoke-WatcherChild -RepoPath $t -TimeoutSeconds 20 -AfterBaseline {
-            [System.IO.File]::AppendAllText((Join-Path $t ".mailbox\mailbox.md"), "x", [System.Text.UTF8Encoding]::new($false))
+            [System.IO.File]::AppendAllText((Join-Path $t ".mailbox\agent-b.md"), "x", [System.Text.UTF8Encoding]::new($false))
         }.GetNewClosure()
         $result.Output | Should -Match "MAILBOX_CHANGED"
         $result.ExitCode | Should -Be 0
@@ -121,6 +140,26 @@ Describe "watch-mailbox.ps1 (R1) - child process" {
         }.GetNewClosure()
         $result.Output | Should -Match "MAILBOX_CHANGED"
         $result.ExitCode | Should -Be 0
+    }
+
+    It "with -Role, wakes on the PEER's lane" {
+        $t = New-FakeTarget "watch-role-peer"
+        & $script:initScript -RepoPath $t *>$null
+        $result = Invoke-WatcherChild -RepoPath $t -TimeoutSeconds 20 -Role "agent-a" -AfterBaseline {
+            [System.IO.File]::AppendAllText((Join-Path $t ".mailbox\agent-b.md"), "x", [System.Text.UTF8Encoding]::new($false))
+        }.GetNewClosure()
+        $result.Output | Should -Match "MAILBOX_CHANGED"
+        $result.ExitCode | Should -Be 0
+    }
+
+    It "with -Role, does NOT wake on its OWN lane (bounded timeout, exit 1)" {
+        $t = New-FakeTarget "watch-role-own"
+        & $script:initScript -RepoPath $t *>$null
+        $result = Invoke-WatcherChild -RepoPath $t -TimeoutSeconds 6 -Role "agent-a" -AfterBaseline {
+            [System.IO.File]::AppendAllText((Join-Path $t ".mailbox\agent-a.md"), "x", [System.Text.UTF8Encoding]::new($false))
+        }.GetNewClosure()
+        $result.Output | Should -Match "MAILBOX_WATCH_TIMEOUT"
+        $result.ExitCode | Should -Be 1
     }
 
     It "does not wake on a log-only append (bounded timeout, exit 1)" {
@@ -177,12 +216,17 @@ Describe "render-prompt.ps1 (R4)" {
         $out | Should -Match ([regex]::Escape($t))
     }
 
-    It "gives agent roles the watch/init/ownership commands" {
+    It "gives agent roles the watch/init/ownership commands and lane paths" {
         $t = New-FakeTarget "render-agent-cmds"
         $out = & $script:renderScript -Agent a -RepoPath $t | Out-String
         $out | Should -Match "Watch command"
+        $out | Should -Match "-Role agent-a"
         $out | Should -Match "Init command"
         $out | Should -Match "Ownership-record update"
+        $out | Should -Match "Your lane"
+        $out | Should -Match ([regex]::Escape("agent-a.md"))
+        $out | Should -Match "Peer lane"
+        $out | Should -Match ([regex]::Escape("agent-b.md"))
     }
 
     It "omits every mutating command from the verifier banner" {
@@ -191,6 +235,53 @@ Describe "render-prompt.ps1 (R4)" {
         $out | Should -Not -Match "Init command"
         $out | Should -Not -Match "Ownership-record update"
         $out | Should -Not -Match "Watch command"
+    }
+
+    It "includes the workspace context root when -ContextRoot is passed" {
+        $t = New-FakeTarget "render-ctx"
+        $ctx = Join-Path $TestDrive "workspace-root"
+        New-Item -ItemType Directory -Force -Path $ctx | Out-Null
+        $out = & $script:renderScript -Agent a -RepoPath $t -ContextRoot $ctx | Out-String
+        $out | Should -Match ([regex]::Escape("Workspace context root (READ-ONLY search scope):"))
+        $out | Should -Match ([regex]::Escape($ctx))
+    }
+
+    It "omits the workspace context root when -ContextRoot is not passed" {
+        $t = New-FakeTarget "render-noctx"
+        $out = & $script:renderScript -Agent a -RepoPath $t | Out-String
+        $out | Should -Not -Match ([regex]::Escape("Workspace context root (READ-ONLY search scope):"))
+    }
+}
+
+Describe "install.ps1 + profile snippet" {
+    BeforeAll {
+        $script:installScript = Join-Path $script:repoRoot "install.ps1"
+        $script:snippetPath = Join-Path $script:repoRoot "profile\cocopilot.profile.ps1"
+    }
+
+    It "profile snippet parses cleanly" {
+        $tokens = $errors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile($script:snippetPath, [ref]$tokens, [ref]$errors) | Out-Null
+        @($errors).Count | Should -Be 0
+    }
+
+    It "writes a marker-guarded dot-source block into a fresh profile" {
+        $p = Join-Path $TestDrive "profiles\fresh-profile.ps1"
+        & $script:installScript -ProfilePath $p -SkipUpdate *>$null
+        $raw = Get-Content -Raw $p
+        $raw | Should -Match ([regex]::Escape("# >>> cocopilot >>>"))
+        $raw | Should -Match ([regex]::Escape($script:snippetPath))
+        $raw | Should -Match ([regex]::Escape("# <<< cocopilot <<<"))
+    }
+
+    It "is idempotent: rerunning replaces the block instead of duplicating it" {
+        $p = Join-Path $TestDrive "profiles\idem-profile.ps1"
+        [System.IO.File]::WriteAllText($p, "# user content before`n", $script:utf8NoBom)
+        & $script:installScript -ProfilePath $p -SkipUpdate *>$null
+        & $script:installScript -ProfilePath $p -SkipUpdate *>$null
+        $raw = Get-Content -Raw $p
+        ([regex]::Matches($raw, [regex]::Escape("# >>> cocopilot >>>"))).Count | Should -Be 1
+        $raw | Should -Match "user content before"
     }
 }
 

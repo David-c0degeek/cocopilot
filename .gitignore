@@ -1,5 +1,6 @@
-# Per-machine mailbox state (durable ownership record + ephemeral scratchpad).
+# Per-machine mailbox state (durable ownership record + ephemeral lane scratchpads).
 # Only the *.example.* templates are tracked.
 .mailbox/implementer.json
-.mailbox/mailbox.md
+.mailbox/agent-a.md
+.mailbox/agent-b.md
 .mailbox/session.log.md
