@@ -209,6 +209,146 @@ Describe "cleanup-mailbox.ps1 (R0)" {
     }
 }
 
+Describe "cleanup-mailbox.ps1 -Recurse" {
+    It "cleans the root and every nested repo, ignoring .git/node_modules decoys" {
+        $t = New-FakeTarget "recurse-basic"
+        $child1 = New-FakeTarget "recurse-basic\child1"
+        $child2 = New-FakeTarget "recurse-basic\child2"
+        & $script:initScript -RepoPath $t *>$null
+        & $script:initScript -RepoPath $child1 *>$null
+        & $script:initScript -RepoPath $child2 *>$null
+
+        # Decoys placed inside directories the walk must never descend into -
+        # if discovery is broken, these would show up as cleaned too.
+        $gitDecoy = Join-Path $child1 ".git\.mailbox"
+        $nmDecoy = Join-Path $child2 "node_modules\pkg\.mailbox"
+        New-Item -ItemType Directory -Force -Path $gitDecoy | Out-Null
+        New-Item -ItemType Directory -Force -Path $nmDecoy | Out-Null
+
+        $output = & $script:cleanupScript -RepoPath $t -Recurse -Confirm:$false *>&1 | Out-String
+
+        Test-Path (Join-Path $t ".mailbox") | Should -BeFalse
+        Test-Path (Join-Path $child1 ".mailbox") | Should -BeFalse
+        Test-Path (Join-Path $child2 ".mailbox") | Should -BeFalse
+        Test-Path $gitDecoy | Should -BeTrue
+        Test-Path $nmDecoy | Should -BeTrue
+        $output | Should -Match "Cleaned successfully:\s*3"
+        $output | Should -Match "No changes made \(preview or declined confirmation\):\s*0"
+    }
+
+    It "-WhatIf leaves every discovered target's .mailbox and .gitignore untouched" {
+        $t = New-FakeTarget "recurse-whatif"
+        $child = New-FakeTarget "recurse-whatif\child"
+        & $script:initScript -RepoPath $t *>$null
+        & $script:initScript -RepoPath $child *>$null
+
+        $output = & $script:cleanupScript -RepoPath $t -Recurse -WhatIf -Confirm:$false *>&1 | Out-String
+
+        Test-Path (Join-Path $t ".mailbox") | Should -BeTrue
+        Test-Path (Join-Path $t ".gitignore") | Should -BeTrue
+        Test-Path (Join-Path $child ".mailbox") | Should -BeTrue
+        Test-Path (Join-Path $child ".gitignore") | Should -BeTrue
+
+        # The summary must never claim a mutation that didn't happen: a
+        # -WhatIf run touches nothing, so it must report zero "cleaned" and
+        # both targets under the no-op bucket instead.
+        $output | Should -Match "Cleaned successfully:\s*0"
+        $output | Should -Match "No changes made \(preview or declined confirmation\):\s*2"
+    }
+
+    It "never follows a reparse point - no cycle, no escape, and rejects a .mailbox that is itself a link" {
+        $t = New-FakeTarget "recurse-junction"
+        $child = New-FakeTarget "recurse-junction\child"
+        & $script:initScript -RepoPath $t *>$null
+        & $script:initScript -RepoPath $child *>$null
+
+        $outside = New-FakeTarget "recurse-junction-outside"
+        & $script:initScript -RepoPath $outside *>$null
+
+        # A junction back to an ancestor (cycle) and one out to a sibling
+        # directory (escape) - the guard must follow neither.
+        $loopback = Join-Path $child "loopback"
+        $escape = Join-Path $child "escape"
+        New-Item -ItemType Junction -Path $loopback -Target $t | Out-Null
+        New-Item -ItemType Junction -Path $escape -Target $outside | Out-Null
+
+        # A repo whose .mailbox is ITSELF a junction to an external,
+        # unrelated directory - must be rejected/reported, never treated as
+        # a cleanup target (would otherwise -Recurse -Force delete through
+        # the link).
+        $repoLinked = New-FakeTarget "recurse-junction\repoLinked"
+        $externalDir = New-FakeTarget "recurse-junction-external"
+        $canary = Join-Path $externalDir "external-canary.txt"
+        [System.IO.File]::WriteAllText($canary, "must survive")
+        $mailboxLink = Join-Path $repoLinked ".mailbox"
+        New-Item -ItemType Junction -Path $mailboxLink -Target $externalDir | Out-Null
+
+        $outFile = Join-Path $TestDrive "recurse-junction-output.txt"
+        try {
+            # File redirection (not a pipeline) so every line the script
+            # writes is flushed to disk as produced - reliable even though
+            # this run ends in a throw (the rejected linked .mailbox counts
+            # as a discovery issue), unlike piping through Out-String.
+            $job = Start-Job -ScriptBlock {
+                param($script, $path, $outFile)
+                $result = [pscustomobject]@{ Threw = $false; ErrorMessage = $null }
+                try {
+                    & $script -RepoPath $path -Recurse -WhatIf -Confirm:$false *> $outFile
+                } catch {
+                    $result.Threw = $true
+                    $result.ErrorMessage = $_.Exception.Message
+                }
+                $result
+            } -ArgumentList $script:cleanupScript, $t, $outFile
+            $completed = Wait-Job $job -Timeout 20
+            if (-not $completed) { Stop-Job $job -ErrorAction SilentlyContinue }
+            $result = Receive-Job $job
+            Remove-Job $job -Force
+            $output = if (Test-Path -LiteralPath $outFile) { Get-Content -Raw $outFile } else { $null }
+
+            $completed | Should -Not -BeNullOrEmpty   # did not time out (no infinite loop via the cycle junction)
+            $result.Threw | Should -BeTrue             # a rejected reparse-point .mailbox is a discovery issue -> throws
+            $output | Should -Match "Mailboxes found:\s*2"
+            $output | Should -Match "is a reparse point"
+            Test-Path (Join-Path $outside ".mailbox") | Should -BeTrue   # never reached via the escape junction
+            Test-Path -LiteralPath $canary | Should -BeTrue              # never reached via the linked .mailbox
+        } finally {
+            # Remove every junction non-recursively (link only, never its
+            # target) *before* this test hands $TestDrive back. Pester's own
+            # TestDrive cleanup is not reparse-point-aware: a stray cycle
+            # junction left behind makes IT recurse forever trying to
+            # enumerate the tree (proven empirically), taking every later
+            # test in the run down with it.
+            foreach ($junction in @($loopback, $escape, $mailboxLink)) {
+                if (Test-Path -LiteralPath $junction) {
+                    [System.IO.Directory]::Delete($junction, $false)
+                }
+            }
+        }
+    }
+
+    It "continues past one target's failure and throws only after every target has been attempted" {
+        $t = New-FakeTarget "recurse-partial-fail"
+        $good = New-FakeTarget "recurse-partial-fail\good"
+        $bad = New-FakeTarget "recurse-partial-fail\bad"
+        & $script:initScript -RepoPath $good *>$null
+        & $script:initScript -RepoPath $bad *>$null
+
+        # Force the "bad" target's cleanup to fail partway through by holding
+        # an exclusive lock on a file inside its .mailbox/.
+        $lockedFile = Join-Path $bad ".mailbox\implementer.json"
+        $fs = [System.IO.File]::Open($lockedFile, 'Open', 'ReadWrite', 'None')
+        try {
+            { & $script:cleanupScript -RepoPath $t -Recurse -Confirm:$false *>$null } | Should -Throw
+        } finally {
+            $fs.Dispose()
+        }
+
+        Test-Path (Join-Path $good ".mailbox") | Should -BeFalse
+        Test-Path (Join-Path $bad ".mailbox") | Should -BeTrue
+    }
+}
+
 Describe "render-prompt.ps1 (R4)" {
     It "renders role '<_>' with the resolved repo path" -ForEach @("a", "b", "verifier") {
         $t = New-FakeTarget "render-$_"

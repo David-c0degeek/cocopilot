@@ -64,12 +64,16 @@ function cocopilot-prompt {
 
 function cocopilot-cleanup {
     # Removes cocopilot's .mailbox/ directory and its .gitignore rule from
-    # $RepoPath. Supports -WhatIf to preview.
+    # $RepoPath. Supports -WhatIf to preview. With -Recurse, treats
+    # $RepoPath as a search root and cleans up every repository with a
+    # .mailbox/ found at or below it (e.g. run in C:\Repos to clean every
+    # paired repo underneath).
     param(
         [string]$RepoPath = (Get-Location).Path,
+        [switch]$Recurse,
         [switch]$WhatIf
     )
-    & (Join-Path $script:CocopilotRoot "scripts\cleanup-mailbox.ps1") -RepoPath $RepoPath -WhatIf:$WhatIf
+    & (Join-Path $script:CocopilotRoot "scripts\cleanup-mailbox.ps1") -RepoPath $RepoPath -Recurse:$Recurse -WhatIf:$WhatIf
 }
 
 function cocopilot-update {
