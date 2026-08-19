@@ -65,7 +65,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
 $initMailboxScript = Join-Path $PSScriptRoot "init-mailbox.ps1"
-$initCommand = "& $(ConvertTo-SingleQuoted $initMailboxScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath)"
+$initCommand = Get-CocopilotInitCommand -RepoPath $RepoPath -InitScript $initMailboxScript
 $implementerPath = Join-Path $RepoPath ".mailbox\implementer.json"
 $laneA = Join-Path $RepoPath ".mailbox\agent-a.md"
 $laneB = Join-Path $RepoPath ".mailbox\agent-b.md"

@@ -20,8 +20,8 @@ Before doing anything else:
 1. Read the collaboration protocol file at the path given in the session
    context banner. It is the binding operating agreement for how you and
    Agent B share this repository — especially its "Thinking together",
-   "Paired implementation", and "Mailbox lanes" sections. Do not paraphrase
-   from memory — read the actual file.
+   "Paired implementation", "Ownership handoff", and "Mailbox lanes"
+   sections. Do not paraphrase from memory — read the actual file.
 2. Read the mailbox's `implementer.json`, both lane files, and
    `session.log.md` (paths in the banner). If any is missing, run the init
    command given in the banner — default owner is `agent-a`.

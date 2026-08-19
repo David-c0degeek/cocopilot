@@ -35,8 +35,8 @@ The installer updates the clone (`git pull --ff-only`) and adds a tiny marker-gu
 
 | Function | Does |
 |---|---|
-| `cocopilot-start [-RepoPath] [-ContextRoot] [-UseWindowsTerminal]` | Inits mailbox if missing, opens both agent windows paired on the repo. Defaults to current dir. |
-| `cocopilot-prompt -Agent a\|b\|verifier [-RepoPath] [-ContextRoot]` | Copies that role's paste-ready (re)start prompt to the clipboard — for crashed windows, manual role adds, or a fresh verifier session. |
+| `cocopilot-start [-RepoPath] [-ContextRoot] [-SessionName] [-AllowNonGit] [-UseWindowsTerminal]` | Inits mailbox if missing, opens both agent windows paired on the repo. Defaults to current dir. |
+| `cocopilot-prompt -Agent a\|b\|verifier [-RepoPath] [-ContextRoot] [-AllowNonGit]` | Copies that role's paste-ready (re)start prompt to the clipboard — for crashed windows, manual role adds, or a fresh verifier session. |
 | `cocopilot-cleanup [-RepoPath] [-Recurse] [-WhatIf]` | Removes `.mailbox\` + its `.gitignore` rule when you're done. `-Recurse` cleans every paired repo under `-RepoPath`. |
 | `cocopilot-update` | `git pull` + re-register (reruns the installer). |
 | `copilot-sonnet` / `copilot-terra` | Plain `copilot` launchers with cocopilot's default model/flags. |
@@ -141,7 +141,7 @@ Creates the ownership record and both per-agent lane scratchpads from the two tr
 | `-Owner` | `agent-a` | Which role starts as implementer |
 | `-OwnerModel` | `unknown` | Informational label for the owner's model |
 | `-Force` | off | Reset record + lanes. **The session log is preserved** (a reset entry is appended) |
-| `-AllowNonGit` | off | Permit a non-git target (refused otherwise — the protocol's ownership anchors need git; for a multi-repo workspace use `-ContextRoot` on `start-agents.ps1` instead) |
+| `-AllowNonGit` | off | Pair directly on a workspace root that isn't itself a git repo (e.g. `C:\Repos` containing several independent repos as children) — `head` then reads the fixed sentinel `non-git-root` and `dirty_manifest` becomes the authoritative handoff anchor (see `COLLABORATION.md` "Ownership handoff" → "Non-git workspace roots"). If you only need read-only cross-repo context while writing to just ONE child repo, `-ContextRoot` on `start-agents.ps1` is the lighter-weight alternative |
 
 Safe to re-run: existing files are left alone without `-Force`.
 
@@ -161,7 +161,7 @@ Safe to re-run: existing files are left alone without `-Force`.
     -AgentBCommand copilot-terra  -AgentBArgs @()
 ```
 
-By default, opens two terminal windows, each running a literal `copilot` invocation (no profile magic required) with role prompt + banner injected via `-i`, working directory set to the target repo, and read access back to the cocopilot install via `--add-dir`.
+By default, opens two terminal windows, each running a literal `copilot` invocation (no profile magic required) with role prompt + banner injected via `-i`, working directory set to the target repo, and read access back to the cocopilot install via `--add-dir`. Whenever `wt.exe` (Windows Terminal) is on PATH, both agents open as tabs in the most-recently-used wt.exe window — typically the very window you ran this from — instead of separate OS windows; pass `-UseWindowsTerminal:$false` to force plain console windows regardless.
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -169,8 +169,9 @@ By default, opens two terminal windows, each running a literal `copilot` invocat
 | `-AgentACommand` / `-AgentBCommand` | `copilot` | Executable or profile function per agent |
 | `-AgentAArgs` | `@("--model","claude-sonnet-5","--effort","max","--context","long_context","--autopilot","--allow-all")` | Complete argument array before `-C/-n/-i`; supplying it **replaces** the entire default. Pass `@()` when a profile function supplies its own flags |
 | `-AgentBArgs` | `@("--model","gpt-5.6-terra","--effort","max","--context","long_context","--autopilot","--allow-all")` | Same rules as `-AgentAArgs` |
-| `-NameA` / `-NameB` | `cocopilot-agent-a/b` | Session names (make unique to pair several repos at once) |
-| `-UseWindowsTerminal` | off | `wt.exe` tabs when available; falls back to normal console windows otherwise |
+| `-NameA` / `-NameB` | `cocopilot-agent-a/b` | Session names, and each new window/tab's title. An explicit value always wins; otherwise derived from `-SessionName` |
+| `-SessionName` | (none) | Convenience prefix for both `-NameA`/`-NameB` at once — e.g. `-SessionName claim` yields `claim-agent-a` / `claim-agent-b` — so several concurrent pairings stay identifiable by window/tab title at a glance |
+| `-UseWindowsTerminal` | `$true` | `wt.exe` tabs whenever available (silently falls back to plain console windows otherwise — a no-op default for anyone without Windows Terminal); pass `-UseWindowsTerminal:$false` to force plain windows even when `wt.exe` is installed |
 | `-ShellExe` | current host | Shell for the new windows (pwsh vs powershell matters for `$PROFILE`); `powershell_ise.exe` auto-falls back to `powershell.exe` |
 
 ### `watch-mailbox.ps1` — the listening half
@@ -260,14 +261,14 @@ scripts/
   render-prompt.ps1           print a role prompt for manual paste
   cleanup-mailbox.ps1         remove cocopilot's footprint from a target
 tests/
-  Cocopilot.Tests.ps1         Pester 5 suite (31 tests, both hosts)
+  Cocopilot.Tests.ps1         Pester 5 suite (44 tests, both hosts)
 ```
 
 The real `.mailbox/` state is created **inside each target repo** (git-ignored there); cocopilot's own repo only tracks the two `*.example.*` templates.
 
 ## Tests
 
-34 black-box Pester 5 tests cover init (creation, idempotency, `-Force` log preservation, the non-git refusal + `-AllowNonGit` fallback, refusing cocopilot's own installed repo), the watcher (child-process wake/no-wake, including `-Role` peer-lane filtering: peer's lane wakes it, its own lane doesn't), cleanup (exact block removal, CRLF + LF, refusing cocopilot's own installed repo), recursive cleanup (root + nested targets, `.git`/`node_modules` exclusion, the reparse-point cycle/escape/linked-`.mailbox` guard, excluding cocopilot's own installed repo from discovery, `-WhatIf` preserving every discovered target, per-target failure continuation with a throw only after every attempt completes), all three prompt renders (with and without `-ContextRoot`), the installer (fresh + idempotent profile registration, snippet parse), and whole-file JSON replacement with temp-file cleanup.
+44 black-box Pester 5 tests cover init (creation, idempotency, `-Force` log preservation, the non-git refusal + `-AllowNonGit` fallback with its distinct `non-git-root` sentinel vs. a real git-repo-no-commits zero SHA, refusing cocopilot's own installed repo), the watcher (child-process wake/no-wake, including `-Role` peer-lane filtering: peer's lane wakes it, its own lane doesn't), cleanup (exact block removal, CRLF + LF, refusing cocopilot's own installed repo), recursive cleanup (root + nested targets, `.git`/`node_modules` exclusion, the reparse-point cycle/escape/linked-`.mailbox` guard, excluding cocopilot's own installed repo from discovery, `-WhatIf` preserving every discovered target, per-target failure continuation with a throw only after every attempt completes), all three prompt renders (with and without `-ContextRoot`, and the banner's init command including/omitting `-AllowNonGit` to match the target), the `_common.ps1` helpers backing the workspace-root/session-name/Windows-Terminal-tab features (`Get-CocopilotInitCommand`, `Resolve-CocopilotAgentName`, `Get-CocopilotWindowTitleStatement`, `Get-CocopilotWtNewTabArgs`), the installer (fresh + idempotent profile registration, snippet parse), and whole-file JSON replacement with temp-file cleanup.
 
 **Prerequisite:** Pester 5 side-by-side per host — Windows PowerShell 5.1 ships inbox Pester 3.4 only:
 
@@ -288,9 +289,9 @@ pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pest
 
 **Does this need my repo to be on GitHub?** No. Any local Git repository works; cocopilot's scripts never require or access a Git remote. (The Copilot CLI itself talks to its own service, as always.)
 
-**Can I pair on several repos at once?** Yes — mailboxes are per-`-RepoPath`. Give each launch distinct `-NameA`/`-NameB` so session names don't collide.
+**Can I pair on several repos at once?** Yes — mailboxes are per-`-RepoPath`. Give each launch a distinct `-SessionName` (or `-NameA`/`-NameB` directly) so window/tab titles and session names don't collide.
 
-**Can I point one pair at a whole workspace of repos (`C:\Repos`) for system-wide oversight?** Not as the target — `init-mailbox.ps1` refuses a non-git `-RepoPath` (the ownership epoch, handoff verification, and diff review are all pinned to one git tree; on a plain folder they'd silently degrade to a zero SHA, and "one implementer" would lock every repo at once). What you actually want splits in two: **write scope** stays one repo, **read scope** can be the whole workspace — pass the parent folder as `-ContextRoot` (`cocopilot-start -RepoPath C:\Repos\claim -ContextRoot C:\Repos`). Both agents can then search every sibling repo for context while ownership, diffs, and writes stay anchored to the target. Work spanning several repos = one pair per repo (previous answer), each with the same `-ContextRoot`.
+**Can I point one pair directly at a whole workspace of repos (`C:\Repos`) instead of one child repo?** Yes — pass `-AllowNonGit` to `init-mailbox.ps1` (or `cocopilot-start`) to pair directly on a workspace root that isn't itself a git repository, so a single pair can cover a work unit spanning several child repos at once. Ownership then anchors to `dirty_manifest` instead of git HEAD/status: `head` reads the fixed sentinel `non-git-root`, and a `HANDOFF_OFFER` must enumerate every touched git worktree (its own path, HEAD, and status) plus every changed non-repo file (path + a content hash) — see `COLLABORATION.md` "Ownership handoff" → "Non-git workspace roots" for the exact format. If you only need read-only cross-repo context while writing to just ONE child repo — or the work is genuinely independent per repo rather than one coordinated unit — `-ContextRoot` is the lighter-weight alternative: pair on that one repo (`cocopilot-start -RepoPath C:\Repos\claim -ContextRoot C:\Repos`) and both agents can still search every sibling repo for context, while ownership, diffs, and writes stay anchored to the one target; reserve one-pair-per-repo for genuinely independent work units, each with the same `-ContextRoot`.
 
 **What if the two agents deadlock or an owner vanishes?** Review disagreements are bounded by the round cap — a `REVISE` at `3/3` forces both agents to stop and hand you the decision. A vanished *owner* is different: nothing takes over by timeout (deliberately), so a watcher may wait indefinitely — inspect the tree, decide ownership yourself, and if needed re-run init with `-Force` (history survives in the session log).
 

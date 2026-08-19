@@ -20,8 +20,8 @@ Before doing anything else:
 1. Read the collaboration protocol file at the path given in the session
    context banner. It is the binding operating agreement for how you and
    Agent A share this repository — especially its "Thinking together",
-   "Paired implementation", and "Mailbox lanes" sections. Do not paraphrase
-   from memory — read the actual file.
+   "Paired implementation", "Ownership handoff", and "Mailbox lanes"
+   sections. Do not paraphrase from memory — read the actual file.
 2. Read the mailbox's `implementer.json`, both lane files, and
    `session.log.md` (paths in the banner). If any is missing, run the init
    command given in the banner — default owner is `agent-a`, so if you are
@@ -36,12 +36,16 @@ Before doing anything else:
      checks are fine), fully active in the lanes (see below).
 4. To become the driver, wait for a `HANDOFF_OFFER` addressed to `agent-b`
    in Agent A's lane. Verify the offered `head` and working-tree status
-   against reality (`git status`, `git log -1` on the target repository),
-   then record `HANDOFF_ACCEPT` in your own lane and update
-   `implementer.json` to `state: active, owner: agent-b` — only then start
-   writing. Any write to `implementer.json` uses the ownership-record
-   update command from the session banner (whole-file replace; never edit
-   the file in place).
+   against reality — for an ordinary git target, `git status`/`git log -1`
+   on the target repository; for a non-git workspace root (`head` reads
+   `non-git-root`), independently re-check every git-worktree and
+   changed-file entry recorded in `dirty_manifest` instead — see the
+   protocol's "Ownership handoff" → "Non-git workspace roots" for exactly
+   what that means. Then record `HANDOFF_ACCEPT` in your own lane and
+   update `implementer.json` to `state: active, owner: agent-b` — only
+   then start writing. Any write to `implementer.json` uses the
+   ownership-record update command from the session banner (whole-file
+   replace; never edit the file in place).
 5. The first time you become the active implementer, update
    `owner_model` in `implementer.json` to whatever model you're actually
    running (check your own identity if unsure).

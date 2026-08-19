@@ -7,15 +7,17 @@
 
 .DESCRIPTION
     cocopilot itself stays centrally installed (this script's own location);
-    the mailbox it manages lives inside whatever repository you're pairing
-    on. Templates are read from this cocopilot install's own
-    .mailbox/*.example.* files, but the real, git-ignored files are written
-    into <RepoPath>/.mailbox/, stamped with that repository's current git
-    HEAD. Safe to re-run: it will not overwrite existing implementer.json or
-    lane files unless -Force is passed. The write-once session history
-    (session.log.md) is created if missing and is PRESERVED even with
-    -Force — a session-reset entry is appended instead; only
-    cleanup-mailbox.ps1 removes it (with the whole .mailbox/ directory).
+    the mailbox it manages lives inside whatever repository (or, with
+    -AllowNonGit, workspace root) you're pairing on. Templates are read
+    from this cocopilot install's own .mailbox/*.example.* files, but the
+    real, git-ignored files are written into <RepoPath>/.mailbox/, stamped
+    with that repository's current git HEAD (or the fixed "non-git-root"
+    sentinel, with -AllowNonGit). Safe to re-run: it will not overwrite
+    existing implementer.json or lane files unless -Force is passed. The
+    write-once session history (session.log.md) is created if missing and
+    is PRESERVED even with -Force — a session-reset entry is appended
+    instead; only cleanup-mailbox.ps1 removes it (with the whole
+    .mailbox/ directory).
 
     Before anything is written, does a small safety check: if <RepoPath> is
     a git repository and its .gitignore doesn't already exclude .mailbox,
@@ -41,13 +43,19 @@
     Overwrite existing .mailbox/implementer.json and the two lane files.
 
 .PARAMETER AllowNonGit
-    Permit initializing a target that is not a git repository. Without
-    this, a non-git target is refused: the protocol pins ownership to git
-    HEAD/status, so on a non-git tree every handoff anchor degrades to a
-    zero SHA and the peer can't verify anything. The usual reason to point
-    at a non-git folder — a workspace containing many repos — is better
-    served by pairing on ONE repo and passing the workspace as
-    start-agents.ps1 -ContextRoot (read-only search scope).
+    Pair directly on a workspace root that is itself not a git repository
+    — e.g. a folder like C:\Repos containing several independent repos as
+    children. Without this switch, such a target is refused, since the
+    protocol's ownership anchors (head / dirty_manifest) normally pin to
+    git HEAD/status, which the root itself doesn't have. With
+    -AllowNonGit, head is recorded as the fixed sentinel "non-git-root"
+    and dirty_manifest becomes the authoritative handoff anchor instead —
+    see COLLABORATION.md "Ownership handoff" for exactly what a
+    HANDOFF_OFFER must record in that mode. If you only need read-only
+    cross-repo context while writing to just ONE child repo,
+    start-agents.ps1 -ContextRoot (pairing on that one repo, with the
+    workspace granted as a read-only search scope) is the lighter-weight
+    alternative.
 
 .EXAMPLE
     .\scripts\init-mailbox.ps1 -RepoPath C:\Repos\some-other-project
@@ -101,22 +109,25 @@ if ($isGitRepo) {
         Write-Host "Appended a .mailbox/ ignore rule to $gitignorePath" -ForegroundColor Green
     }
 } elseif (-not $AllowNonGit) {
-    throw ("'$RepoPath' is not a git repository, so the protocol's ownership anchors (HEAD, status, epoch) " +
-        "can't work there. Pair on ONE git repository; if you want cross-repo context from a workspace " +
-        "folder of many repos, pass that folder as start-agents.ps1 -ContextRoot instead (read-only " +
-        "search scope). Use -AllowNonGit to override deliberately.")
+    throw ("'$RepoPath' is not a git repository. Pass -AllowNonGit to pair directly on this " +
+        "workspace root (its ownership anchors then rely on dirty_manifest instead of git " +
+        "HEAD/status - see COLLABORATION.md 'Ownership handoff'). If you only need read-only " +
+        "cross-repo context while writing to just ONE child repo, start-agents.ps1 -ContextRoot " +
+        "is the lighter-weight alternative.")
 } else {
-    Write-Warning "$RepoPath doesn't look like a git repository (-AllowNonGit): ownership anchors degrade to a zero SHA, handoff verification can't check git state, and the .gitignore safety check is skipped. Make sure .mailbox/ never gets committed there."
+    Write-Warning "$RepoPath is not a git repository (-AllowNonGit): head will read the fixed sentinel 'non-git-root', the .gitignore safety check is skipped, and dirty_manifest becomes the authoritative handoff anchor - see COLLABORATION.md 'Ownership handoff' for what a HANDOFF_OFFER must record in this mode. Make sure .mailbox/ never gets committed here."
 }
 
 [System.IO.Directory]::CreateDirectory($mailboxDir) | Out-Null
 
-$head = "0000000000000000000000000000000000000000"
-try {
-    $gitHead = git -C $RepoPath rev-parse HEAD 2>$null
-    if ($LASTEXITCODE -eq 0 -and $gitHead) { $head = $gitHead.Trim() }
-} catch {
-    Write-Warning "Could not resolve git HEAD for $RepoPath (no commits yet?); using zero SHA."
+$head = if ($isGitRepo) { "0000000000000000000000000000000000000000" } else { "non-git-root" }
+if ($isGitRepo) {
+    try {
+        $gitHead = git -C $RepoPath rev-parse HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and $gitHead) { $head = $gitHead.Trim() }
+    } catch {
+        Write-Warning "Could not resolve git HEAD for $RepoPath (no commits yet?); using zero SHA."
+    }
 }
 
 if ((Test-Path -LiteralPath $implementerPath) -and -not $Force) {
@@ -127,7 +138,12 @@ if ((Test-Path -LiteralPath $implementerPath) -and -not $Force) {
     $record.owner_model = $OwnerModel
     $record.head = $head
     Write-MailboxJson -Path $implementerPath -Object $record
-    Write-Host "Wrote $implementerPath (owner=$Owner, head=$($head.Substring(0, [Math]::Min(7,$head.Length))))" -ForegroundColor Green
+    # Only a real git repo's head looks like a SHA worth truncating for
+    # display; the non-git-root sentinel is short and self-explanatory, so
+    # showing it in full avoids an odd mid-word cut ("non-git" instead of
+    # "non-git-root").
+    $headDisplay = if ($isGitRepo) { $head.Substring(0, [Math]::Min(7, $head.Length)) } else { $head }
+    Write-Host "Wrote $implementerPath (owner=$Owner, head=$headDisplay)" -ForegroundColor Green
 }
 
 foreach ($lanePath in $lanePaths) {

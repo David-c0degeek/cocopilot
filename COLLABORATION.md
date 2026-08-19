@@ -173,6 +173,36 @@ ownership record.
 4. There is no timeout takeover. If an owner disappears or state disagrees,
    stop; the user resolves ownership after the tree is inspected.
 
+### Non-git workspace roots
+
+If `RepoPath` is not itself a git repository (a multi-repo workspace root
+initialized via `init-mailbox.ps1 -AllowNonGit` — see "Workspace context"
+above for when this is the right call vs. `-ContextRoot`), `head` reads
+the fixed sentinel `non-git-root` instead of a SHA — distinct from the
+all-zero SHA, which still means "git repo, HEAD unresolved / no commits
+yet." `dirty_manifest` becomes the authoritative handoff anchor in this
+mode, and a `HANDOFF_OFFER` is invalid unless it is independently
+verifiable:
+
+- One entry per Git worktree rooted anywhere below the workspace (not
+  just immediate children — workspaces commonly nest repos) that was
+  touched during the work unit, recording: its path relative to
+  `RepoPath`, its exact current HEAD (full SHA), and its exact
+  `git status --porcelain` output.
+- One entry per changed file outside any Git worktree, recording: its
+  path relative to `RepoPath`, and a content hash (e.g. SHA-256).
+- A compact structured manifest (e.g. one JSON object per entry) is
+  preferred where practical; an unambiguous, documented string format is
+  acceptable otherwise — either way the format must be fixed and
+  self-describing enough for the peer to parse back out.
+- Step 2's verification means: for every Git entry, independently run
+  `git status --porcelain` / `git rev-parse HEAD` in that worktree and
+  confirm an exact match; for every file entry, recompute the hash and
+  confirm an exact match. This replaces (not merely supplements) the
+  single-repo `git status`/`git log -1` check in step 2 above.
+- An empty or incomplete `dirty_manifest` on a non-git-root
+  `HANDOFF_OFFER` is invalid; the peer must reject it.
+
 Review revisions do not transfer ownership: the existing implementer remains
 active unless the explicit handoff completes.
 

@@ -77,6 +77,31 @@
 
 .PARAMETER UseWindowsTerminal
     Launch via `wt.exe` new tabs instead of plain new console windows.
+    Defaults to $true — automatically used whenever `wt.exe` is found on
+    PATH (silently falls back to plain console windows otherwise, so this
+    is a no-op default change for anyone without Windows Terminal). The
+    two agent tabs land in the most-recently-used wt.exe window (Microsoft's
+    own "-w 0" idiom) — typically the very window you ran this from — or a
+    fresh one if none exists. Pass -UseWindowsTerminal:$false to force
+    plain console windows even when `wt.exe` is available.
+
+.PARAMETER NameA
+    Session name for agent-a — also becomes its console/wt-tab title.
+    Defaults to "cocopilot-agent-a", or "<SessionName>-agent-a" when
+    -SessionName is given and -NameA isn't itself explicitly passed. An
+    explicit -NameA always wins over -SessionName.
+
+.PARAMETER NameB
+    Same as -NameA, for agent-b ("cocopilot-agent-b" /
+    "<SessionName>-agent-b").
+
+.PARAMETER SessionName
+    Convenience prefix applied to both -NameA and -NameB when they aren't
+    explicitly passed — e.g. -SessionName "claim" yields "claim-agent-a" /
+    "claim-agent-b", shown as both the copilot session name and the new
+    window/tab's title, so several concurrent pairings stay identifiable
+    at a glance. Has no effect on a -NameA/-NameB that's explicitly
+    supplied.
 
 .PARAMETER ShellExe
     Path to the PowerShell executable used for each new window. Defaults to
@@ -96,8 +121,14 @@
     # CLI, claude-sonnet-5 and gpt-5.6-terra respectively, paired on that repo
 
 .EXAMPLE
-    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentACommand copilot-sonnet -AgentAArgs @() -AgentBCommand copilot-terra -AgentBArgs @() -UseWindowsTerminal
-    # use your own PowerShell profile shortcuts instead of the literal defaults
+    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentACommand copilot-sonnet -AgentAArgs @() -AgentBCommand copilot-terra -AgentBArgs @() -UseWindowsTerminal:$false
+    # use your own PowerShell profile shortcuts instead of the literal
+    # defaults, and force plain console windows instead of wt.exe tabs
+
+.EXAMPLE
+    .\scripts\start-agents.ps1 -RepoPath C:\Repos\claim -SessionName claim
+    # tabs/windows and copilot session names are "claim-agent-a" /
+    # "claim-agent-b" - handy when pairing on several repos at once
 #>
 param(
     [string]$RepoPath = (Get-Location).Path,
@@ -108,13 +139,17 @@ param(
     [string[]]$AgentBArgs = @("--model", "gpt-5.6-terra", "--effort", "max", "--context", "long_context", "--autopilot", "--allow-all"),
     [string]$NameA = "cocopilot-agent-a",
     [string]$NameB = "cocopilot-agent-b",
-    [switch]$UseWindowsTerminal,
+    [string]$SessionName,
+    [switch]$UseWindowsTerminal = $true,
     [string]$ShellExe = (Get-Process -Id $PID).Path
 )
 
 $ErrorActionPreference = "Stop"
 
 . (Join-Path $PSScriptRoot "_common.ps1")
+
+$NameA = Resolve-CocopilotAgentName -CurrentValue $NameA -ExplicitlyBound $PSBoundParameters.ContainsKey('NameA') -SessionName $SessionName -AgentRole "agent-a"
+$NameB = Resolve-CocopilotAgentName -CurrentValue $NameB -ExplicitlyBound $PSBoundParameters.ContainsKey('NameB') -SessionName $SessionName -AgentRole "agent-b"
 
 if ((Split-Path -Leaf $ShellExe) -ieq "powershell_ise.exe") {
     # ISE can't be launched with the -NoExit/-EncodedCommand console
@@ -136,7 +171,7 @@ $mailboxFiles = @("implementer.json", "agent-a.md", "agent-b.md", "session.log.m
     ForEach-Object { Join-Path $RepoPath ".mailbox\$_" }
 
 if (@($mailboxFiles | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0) {
-    $initCommand = "& $(ConvertTo-SingleQuoted $initMailboxScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath)"
+    $initCommand = Get-CocopilotInitCommand -RepoPath $RepoPath -InitScript $initMailboxScript
     throw "Mailbox state for '$RepoPath' is incomplete; run $initCommand first."
 }
 foreach ($p in @($promptA, $promptB)) {
@@ -173,7 +208,14 @@ function Start-CopilotAgent {
     # --add-dir opens the optional workspace context root; the read-only
     # discipline for it is the protocol's, not the CLI's.
     $contextDirArg = if ($ContextRoot) { "--add-dir $(ConvertTo-SingleQuoted $ContextRoot) " } else { "" }
-    $innerScript = ("& $agentCommandQ " + $(if ($agentArgsQ) { "$agentArgsQ " } else { "" }) + "-C $repoQ -n $nameQ --add-dir $addDirQ $contextDirArg-i $promptQ").Trim()
+    $copilotInvocation = ("& $agentCommandQ " + $(if ($agentArgsQ) { "$agentArgsQ " } else { "" }) + "-C $repoQ -n $nameQ --add-dir $addDirQ $contextDirArg-i $promptQ").Trim()
+
+    # Sets the new console's own window title - the only thing that gives
+    # the plain (non-Windows-Terminal) console-window path any title at
+    # all; harmless alongside wt.exe's own --title/--suppressApplicationTitle
+    # below (that pair keeps the wt tab's title fixed regardless of
+    # whatever this in-process statement does).
+    $innerScript = (Get-CocopilotWindowTitleStatement -Title $Name) + $copilotInvocation
 
     # -EncodedCommand avoids all nested-quoting problems (works regardless
     # of spaces/quotes in RepoPath or the prompt text) and still loads
@@ -182,7 +224,7 @@ function Start-CopilotAgent {
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerScript))
 
     if ($UseWindowsTerminal -and (Get-Command wt.exe -ErrorAction SilentlyContinue)) {
-        $wtArgs = @("new-tab", "--title", $Name, "--", $ShellExe, "-NoExit", "-EncodedCommand", $encoded)
+        $wtArgs = Get-CocopilotWtNewTabArgs -Title $Name -RepoPath $RepoPath -ShellExe $ShellExe -EncodedCommand $encoded
         Start-Process -FilePath "wt.exe" -ArgumentList $wtArgs
     } else {
         Start-Process -FilePath $ShellExe `

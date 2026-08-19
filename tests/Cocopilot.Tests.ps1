@@ -111,13 +111,24 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         Test-Path (Join-Path $t ".mailbox") | Should -BeFalse
     }
 
-    It "initializes a non-git target with -AllowNonGit (zero SHA, no .gitignore)" {
+    It "initializes a non-git target with -AllowNonGit (non-git-root sentinel, no .gitignore)" {
         $t = Join-Path $TestDrive "init-nongit-allowed"
         New-Item -ItemType Directory -Force -Path $t | Out-Null
         & $script:initScript -RepoPath $t -AllowNonGit *>$null
         $record = Get-Content -Raw (Join-Path $t ".mailbox\implementer.json") | ConvertFrom-Json
-        $record.head | Should -Be ("0" * 40)
+        $record.head | Should -Be "non-git-root"
         Test-Path (Join-Path $t ".gitignore") | Should -BeFalse
+    }
+
+    It "gives a git repo with no commits yet the zero SHA, not the non-git-root sentinel" {
+        # Regression test for the sentinel fix: New-FakeTarget's `git init`
+        # never commits, so this is a REAL git repo whose HEAD simply can't
+        # resolve yet - it must stay distinguishable from an -AllowNonGit
+        # workspace root, which gets the "non-git-root" sentinel instead.
+        $t = New-FakeTarget "init-git-no-commits"
+        & $script:initScript -RepoPath $t *>$null
+        $record = Get-Content -Raw (Join-Path $t ".mailbox\implementer.json") | ConvertFrom-Json
+        $record.head | Should -Be ("0" * 40)
     }
 
     It "refuses to initialize a mailbox in cocopilot's own installed repo" {
@@ -426,6 +437,76 @@ Describe "render-prompt.ps1 (R4)" {
         $t = New-FakeTarget "render-noctx"
         $out = & $script:renderScript -Agent a -RepoPath $t | Out-String
         $out | Should -Not -Match ([regex]::Escape("Workspace context root (READ-ONLY search scope):"))
+    }
+
+    It "embeds -AllowNonGit in the banner's init command for a non-git target" {
+        $t = Join-Path $TestDrive "render-nongit"
+        New-Item -ItemType Directory -Force -Path $t | Out-Null
+        $out = & $script:renderScript -Agent a -RepoPath $t | Out-String
+        $out | Should -Match ([regex]::Escape("-AllowNonGit"))
+    }
+
+    It "omits -AllowNonGit from the banner's init command for a git target" {
+        $t = New-FakeTarget "render-git"
+        $out = & $script:renderScript -Agent a -RepoPath $t | Out-String
+        $out | Should -Not -Match ([regex]::Escape("-AllowNonGit"))
+    }
+}
+
+Describe "_common.ps1 helpers" {
+    Context "Get-CocopilotInitCommand" {
+        It "appends -AllowNonGit for a non-git target" {
+            $t = Join-Path $TestDrive "common-initcmd-nongit"
+            New-Item -ItemType Directory -Force -Path $t | Out-Null
+            $cmd = Get-CocopilotInitCommand -RepoPath $t -InitScript $script:initScript
+            $cmd | Should -Match ([regex]::Escape("-AllowNonGit"))
+        }
+
+        It "omits -AllowNonGit for a git target" {
+            $t = New-FakeTarget "common-initcmd-git"
+            $cmd = Get-CocopilotInitCommand -RepoPath $t -InitScript $script:initScript
+            $cmd | Should -Not -Match ([regex]::Escape("-AllowNonGit"))
+        }
+    }
+
+    Context "Resolve-CocopilotAgentName" {
+        It "keeps the current value when explicitly bound, even matching the literal default, with -SessionName set" {
+            Resolve-CocopilotAgentName -CurrentValue "cocopilot-agent-a" -ExplicitlyBound $true -SessionName "claim" -AgentRole "agent-a" |
+                Should -Be "cocopilot-agent-a"
+        }
+
+        It "derives SessionName-AgentRole when not bound and -SessionName is set" {
+            Resolve-CocopilotAgentName -CurrentValue "cocopilot-agent-b" -ExplicitlyBound $false -SessionName "claim" -AgentRole "agent-b" |
+                Should -Be "claim-agent-b"
+        }
+
+        It "keeps the current value when not bound and -SessionName is empty" {
+            Resolve-CocopilotAgentName -CurrentValue "cocopilot-agent-a" -ExplicitlyBound $false -SessionName $null -AgentRole "agent-a" |
+                Should -Be "cocopilot-agent-a"
+        }
+    }
+
+    Context "Get-CocopilotWindowTitleStatement" {
+        It "produces an apostrophe-safe window-title assignment" {
+            $stmt = Get-CocopilotWindowTitleStatement -Title "claim's session"
+            $stmt | Should -Be "`$host.UI.RawUI.WindowTitle = 'claim''s session'; "
+        }
+    }
+
+    Context "Get-CocopilotWtNewTabArgs" {
+        It "builds the exact expected argument array (-w 0 global, before new-tab)" {
+            $args = Get-CocopilotWtNewTabArgs -Title "claim-agent-a" -RepoPath "C:\Repos\claim" -ShellExe "pwsh.exe" -EncodedCommand "BASE64=="
+            $expected = @(
+                "-w", "0",
+                "new-tab",
+                "--title", "claim-agent-a",
+                "--suppressApplicationTitle",
+                "--startingDirectory", "C:\Repos\claim",
+                "--",
+                "pwsh.exe", "-NoExit", "-EncodedCommand", "BASE64=="
+            )
+            ($args -join "|") | Should -Be ($expected -join "|")
+        }
     }
 }
 

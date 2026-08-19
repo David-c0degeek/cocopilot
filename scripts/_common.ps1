@@ -53,6 +53,105 @@ function Write-MailboxJson {
     }
 }
 
+function Get-CocopilotInitCommand {
+    <#
+    .SYNOPSIS
+        Builds the ready-to-run init-mailbox.ps1 command suggested to
+        recover a missing/incomplete mailbox (embedded in the session
+        banner, and in start-agents.ps1's / watch-mailbox.ps1's own
+        "mailbox missing" throws).
+
+    .DESCRIPTION
+        Single source of truth for that suggestion so all three sites
+        agree: probes whether $RepoPath is currently a git repository and,
+        if not, appends -AllowNonGit — otherwise the suggested command
+        would refuse to run on a non-git workspace root, bouncing the user
+        into a dead-end recovery loop.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$RepoPath,
+        [Parameter(Mandatory)][string]$InitScript
+    )
+
+    $isGitRepo = $false
+    try {
+        $null = git -C $RepoPath rev-parse --is-inside-work-tree 2>$null
+        $isGitRepo = ($LASTEXITCODE -eq 0)
+    } catch { $isGitRepo = $false }
+
+    $allowNonGitFlag = if ($isGitRepo) { "" } else { " -AllowNonGit" }
+    return "& $(ConvertTo-SingleQuoted $InitScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath)$allowNonGitFlag"
+}
+
+function Resolve-CocopilotAgentName {
+    <#
+    .SYNOPSIS
+        Resolves the effective session/window name for one agent: an
+        explicitly-bound -NameA/-NameB always wins; otherwise -SessionName
+        (if given) derives "<SessionName>-<AgentRole>"; otherwise the
+        caller's own inline default (already in $CurrentValue) stands.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$CurrentValue,
+        [Parameter(Mandatory)][bool]$ExplicitlyBound,
+        [string]$SessionName,
+        [Parameter(Mandatory)][ValidateSet("agent-a", "agent-b")][string]$AgentRole
+    )
+
+    if (-not $ExplicitlyBound -and $SessionName) {
+        return "$SessionName-$AgentRole"
+    }
+    return $CurrentValue
+}
+
+function Get-CocopilotWindowTitleStatement {
+    <#
+    .SYNOPSIS
+        A small PowerShell statement, meant to be prepended to an agent's
+        encoded inner script, that sets the new console's window title —
+        the only way the plain (non-Windows-Terminal) console-window path
+        gets any title at all.
+    #>
+    param([Parameter(Mandatory)][string]$Title)
+    return "`$host.UI.RawUI.WindowTitle = $(ConvertTo-SingleQuoted $Title); "
+}
+
+function Get-CocopilotWtNewTabArgs {
+    <#
+    .SYNOPSIS
+        Builds the wt.exe argument array for opening one agent as a new
+        tab.
+
+    .DESCRIPTION
+        -w 0 is a GLOBAL wt.exe option (must precede the command verb) —
+        Microsoft's documented "run in the most-recently-used window, or
+        create one if none exists" sentinel. This is what actually fixes
+        "always opens a new window": without it, every wt.exe invocation
+        opens a fresh window regardless of one already being open.
+        --startingDirectory matches the plain-console-window branch, which
+        sets -WorkingDirectory; the wt.exe branch had no equivalent before
+        this, so a tab could start in the wrong directory.
+        --suppressApplicationTitle keeps the hosted process (PowerShell,
+        then copilot) from silently overwriting --title later.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Title,
+        [Parameter(Mandatory)][string]$RepoPath,
+        [Parameter(Mandatory)][string]$ShellExe,
+        [Parameter(Mandatory)][string]$EncodedCommand
+    )
+
+    return @(
+        "-w", "0",
+        "new-tab",
+        "--title", $Title,
+        "--suppressApplicationTitle",
+        "--startingDirectory", $RepoPath,
+        "--",
+        $ShellExe, "-NoExit", "-EncodedCommand", $EncodedCommand
+    )
+}
+
 function Get-CocopilotSessionBanner {
     <#
     .SYNOPSIS
@@ -73,7 +172,7 @@ function Get-CocopilotSessionBanner {
     $commonScript = Join-Path $CocopilotRoot "scripts\_common.ps1"
     $implementerJson = Join-Path $RepoPath ".mailbox\implementer.json"
     $watchCmd = "& $(ConvertTo-SingleQuoted $watchScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath) -Role $AgentRole"
-    $initCmd = "& $(ConvertTo-SingleQuoted $initScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath)"
+    $initCmd = Get-CocopilotInitCommand -RepoPath $RepoPath -InitScript $initScript
     $ownershipCmd = ". $(ConvertTo-SingleQuoted $commonScript); Write-MailboxJson -Path $(ConvertTo-SingleQuoted $implementerJson) -Object `$record"
 
     $core = @"
