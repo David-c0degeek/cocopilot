@@ -4,3 +4,6 @@
 .mailbox/agent-a.md
 .mailbox/agent-b.md
 .mailbox/session.log.md
+
+# Per-machine cocopilot mailbox state (see cocopilot's own README/COLLABORATION.md)
+.mailbox/
