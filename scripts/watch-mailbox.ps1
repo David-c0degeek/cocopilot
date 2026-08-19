@@ -65,7 +65,6 @@ $ErrorActionPreference = "Stop"
 
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
 $initMailboxScript = Join-Path $PSScriptRoot "init-mailbox.ps1"
-$initCommand = Get-CocopilotInitCommand -RepoPath $RepoPath -InitScript $initMailboxScript
 $implementerPath = Join-Path $RepoPath ".mailbox\implementer.json"
 $laneA = Join-Path $RepoPath ".mailbox\agent-a.md"
 $laneB = Join-Path $RepoPath ".mailbox\agent-b.md"
@@ -78,6 +77,14 @@ $watchPaths = switch ($Role) {
 
 foreach ($p in @($implementerPath, $laneA, $laneB)) {
     if (-not (Test-Path -LiteralPath $p)) {
+        # Computed lazily, here in the error path, not unconditionally at
+        # startup: Get-CocopilotInitCommand shells out to git to decide
+        # whether to suggest -AllowNonGit, and this script's whole job is
+        # to sit in a tight poll loop - paying for a process spawn on every
+        # single invocation, even the overwhelmingly common case where the
+        # mailbox is already fine, only delays reaching the polling loop
+        # for no benefit.
+        $initCommand = Get-CocopilotInitCommand -RepoPath $RepoPath -InitScript $initMailboxScript
         throw "Missing mailbox file: $p. Run $initCommand first."
     }
 }
