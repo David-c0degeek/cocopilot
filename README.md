@@ -133,7 +133,7 @@ All five user-facing commands live in [`scripts/`](scripts), support `-RepoPath`
 .\scripts\init-mailbox.ps1 -RepoPath C:\Repos\your-project
 ```
 
-Creates the ownership record and both per-agent lane scratchpads from the two tracked templates and generates the session log, all inside the target repo's `.mailbox/`. For a Git target not already ignoring `.mailbox/`, it appends the ignore rule **before** creating any mailbox state — so nothing committable ever exists unprotected, even if init is interrupted.
+Creates the ownership record and both per-agent lane scratchpads from the two tracked templates and generates the session log, all inside the target repo's `.mailbox/`. For a Git target not already ignoring `.mailbox/`, it appends the ignore rule **before** creating any mailbox state — so nothing committable ever exists unprotected, even if init is interrupted. Refuses outright if `-RepoPath` resolves to cocopilot's own installed repo — that repo is a tool you pair *from*, never a project you pair *on*, and its `.mailbox/` intentionally tracks the two `*.example.*` templates this script reads from.
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -210,14 +210,14 @@ Prints one role's paste-ready prompt (banner + role file). The verifier's banner
 .\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos -Recurse              # clean every paired repo under C:\Repos
 ```
 
-Removes `.mailbox/` and exactly the `.gitignore` block init added (your own rules survive, CRLF or LF). Defensively un-tracks any `.mailbox/` paths that somehow reached the git index — staged only, never auto-committed. Supports `-WhatIf` / `-Confirm`.
+Removes `.mailbox/` and exactly the `.gitignore` block init added (your own rules survive, CRLF or LF). Defensively un-tracks any `.mailbox/` paths that somehow reached the git index — staged only, never auto-committed. Refuses outright if `-RepoPath` resolves to cocopilot's own installed repo, the same way `init-mailbox.ps1` does. Supports `-WhatIf` / `-Confirm`.
 
 | Parameter | Default | Meaning |
 |---|---|---|
 | `-RepoPath` | current dir | Repository to clean up, or — with `-Recurse` — the root to search |
 | `-Recurse` | off | Treat `-RepoPath` as a search root: find and clean up every repository with a `.mailbox/` at or below it (including `-RepoPath` itself) |
 
-With `-Recurse`, the walk never descends into a directory named `.git` or `node_modules`, and never follows a reparse point (symbolic link, junction, or mount point) — so a junction can't create a traversal cycle back up the tree or walk the search outside the requested root. A `.mailbox/` that is itself a reparse point is rejected the same way, in both `-Recurse` discovery and the single-target path — cocopilot never creates it that way, and `-Recurse -Force` must never be pointed through a link to an arbitrary, externally-controlled target. A directory that can't be enumerated is recorded as a discovery issue rather than silently skipped. One target failing never stops the others — every discoverable target is attempted, a summary is printed, and the script throws only after every attempt has completed if anything (cleanup or discovery) failed, so a partial cleanup can't be mistaken for full success.
+With `-Recurse`, the walk never descends into a directory named `.git` or `node_modules`, and never follows a reparse point (symbolic link, junction, or mount point) — so a junction can't create a traversal cycle back up the tree or walk the search outside the requested root. A `.mailbox/` that is itself a reparse point is rejected the same way, in both `-Recurse` discovery and the single-target path — cocopilot never creates it that way, and `-Recurse -Force` must never be pointed through a link to an arbitrary, externally-controlled target. cocopilot's own installed repo is excluded from `-Recurse` discovery the same way — reported as a discovery issue, never attempted as a target — so pointing `-Recurse` at a workspace that happens to contain the cocopilot checkout itself can't wipe its tracked templates. A directory that can't be enumerated is recorded as a discovery issue rather than silently skipped. One target failing never stops the others — every discoverable target is attempted, a summary is printed, and the script throws only after every attempt has completed if anything (cleanup or discovery) failed, so a partial cleanup can't be mistaken for full success.
 
 ## The protocol in 60 seconds
 
@@ -267,7 +267,7 @@ The real `.mailbox/` state is created **inside each target repo** (git-ignored t
 
 ## Tests
 
-31 black-box Pester 5 tests cover init (creation, idempotency, `-Force` log preservation, the non-git refusal + `-AllowNonGit` fallback), the watcher (child-process wake/no-wake, including `-Role` peer-lane filtering: peer's lane wakes it, its own lane doesn't), cleanup (exact block removal, CRLF + LF), recursive cleanup (root + nested targets, `.git`/`node_modules` exclusion, the reparse-point cycle/escape/linked-`.mailbox` guard, `-WhatIf` preserving every discovered target, per-target failure continuation with a throw only after every attempt completes), all three prompt renders (with and without `-ContextRoot`), the installer (fresh + idempotent profile registration, snippet parse), and whole-file JSON replacement with temp-file cleanup.
+34 black-box Pester 5 tests cover init (creation, idempotency, `-Force` log preservation, the non-git refusal + `-AllowNonGit` fallback, refusing cocopilot's own installed repo), the watcher (child-process wake/no-wake, including `-Role` peer-lane filtering: peer's lane wakes it, its own lane doesn't), cleanup (exact block removal, CRLF + LF, refusing cocopilot's own installed repo), recursive cleanup (root + nested targets, `.git`/`node_modules` exclusion, the reparse-point cycle/escape/linked-`.mailbox` guard, excluding cocopilot's own installed repo from discovery, `-WhatIf` preserving every discovered target, per-target failure continuation with a throw only after every attempt completes), all three prompt renders (with and without `-ContextRoot`), the installer (fresh + idempotent profile registration, snippet parse), and whole-file JSON replacement with temp-file cleanup.
 
 **Prerequisite:** Pester 5 side-by-side per host — Windows PowerShell 5.1 ships inbox Pester 3.4 only:
 

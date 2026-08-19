@@ -22,6 +22,14 @@
          was created solely by init-mailbox.ps1 (i.e. it's empty after
          removing our block), the file itself is deleted too.
 
+    -RepoPath resolving to cocopilot's own installed repo is refused
+    outright (single-target: throws; -Recurse: excluded from discovery and
+    reported as a discovery issue) — that repo is a tool you pair *from*,
+    never a project you pair *on*, and its .mailbox/ intentionally tracks
+    the two *.example.* templates init-mailbox.ps1 reads from. Treating
+    those tracked files as the "should never happen" case in step 1 would
+    otherwise untrack and delete them.
+
     This does NOT touch anything else in the target repository — not the
     agents' actual work, not unrelated .gitignore rules, not git history.
     Supports -WhatIf/-Confirm since it deletes files; nothing here commits
@@ -78,6 +86,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# This very file's own parent directory - i.e. wherever THIS cocopilot
+# install lives on disk, regardless of where it was cloned to. cocopilot's
+# own repo is never a valid cleanup target: its .mailbox/ intentionally
+# tracks the *.example.* templates init-mailbox.ps1 reads from, so "found
+# tracked files under .mailbox/" there is expected, not a bug to fix.
+# Checked below both for a direct single-target call and during -Recurse
+# discovery, the same way a reparse-point .mailbox is guarded in both places.
+$script:CocopilotOwnRoot = (Split-Path -Parent $PSScriptRoot).TrimEnd('\', '/')
+
+function Test-IsCocopilotOwnRoot {
+    param([Parameter(Mandatory)][string]$Path)
+    return ([System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')) -ieq $script:CocopilotOwnRoot
+}
+
 function Invoke-SingleMailboxCleanup {
     <#
     .SYNOPSIS
@@ -97,6 +119,13 @@ function Invoke-SingleMailboxCleanup {
     param(
         [Parameter(Mandatory)][string]$RepoPath
     )
+
+    if (Test-IsCocopilotOwnRoot -Path $RepoPath) {
+        throw ("'$RepoPath' is cocopilot's own installed repo, not a project you were pairing on. " +
+            "Its .mailbox/ intentionally tracks the *.example.* templates that init-mailbox.ps1 reads from " +
+            "(see README.md/COLLABORATION.md) - cleaning up here would delete them. cd into the project " +
+            "repo you actually paired on and re-run cocopilot-cleanup there instead.")
+    }
 
     $mailboxDir = Join-Path $RepoPath ".mailbox"
     $gitignorePath = Join-Path $RepoPath ".gitignore"
@@ -224,26 +253,37 @@ function Find-MailboxTarget {
 
         $mailboxCandidate = Join-Path $current ".mailbox"
         if (Test-Path -LiteralPath $mailboxCandidate -PathType Container) {
-            # A .mailbox that is itself a reparse point (symlink/junction/
-            # mount point) is never a valid cleanup target - cocopilot never
-            # creates it that way, and Invoke-SingleMailboxCleanup would
-            # otherwise be asked to -Recurse -Force delete through a link to
-            # an arbitrary, externally-controlled target. Reject and report
-            # it as a discovery issue instead of a target.
-            $mailboxAttrs = $null
-            try {
-                $mailboxAttrs = [System.IO.File]::GetAttributes($mailboxCandidate)
-            } catch {
-                $failures.Add([pscustomobject]@{ Path = $mailboxCandidate; Error = $_.Exception.Message })
-            }
-
-            if ($null -ne $mailboxAttrs -and $mailboxAttrs.HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
+            # cocopilot's own installed repo is never a valid cleanup target
+            # (see Test-IsCocopilotOwnRoot) - reject and report it as a
+            # discovery issue instead of a target, the same as a reparse-point
+            # .mailbox below, rather than letting it fail loudly mid-Recurse.
+            if (Test-IsCocopilotOwnRoot -Path $current) {
                 $failures.Add([pscustomobject]@{
                     Path  = $mailboxCandidate
-                    Error = "'.mailbox' is a reparse point (symlink/junction/mount point) - refusing to treat it as a cleanup target."
+                    Error = "This is cocopilot's own installed repo - its .mailbox/ intentionally tracks the *.example.* templates and must never be treated as a cleanup target."
                 })
-            } elseif ($null -ne $mailboxAttrs) {
-                $targets.Add($current)
+            } else {
+                # A .mailbox that is itself a reparse point (symlink/junction/
+                # mount point) is never a valid cleanup target - cocopilot
+                # never creates it that way, and Invoke-SingleMailboxCleanup
+                # would otherwise be asked to -Recurse -Force delete through a
+                # link to an arbitrary, externally-controlled target. Reject
+                # and report it as a discovery issue instead of a target.
+                $mailboxAttrs = $null
+                try {
+                    $mailboxAttrs = [System.IO.File]::GetAttributes($mailboxCandidate)
+                } catch {
+                    $failures.Add([pscustomobject]@{ Path = $mailboxCandidate; Error = $_.Exception.Message })
+                }
+
+                if ($null -ne $mailboxAttrs -and $mailboxAttrs.HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
+                    $failures.Add([pscustomobject]@{
+                        Path  = $mailboxCandidate
+                        Error = "'.mailbox' is a reparse point (symlink/junction/mount point) - refusing to treat it as a cleanup target."
+                    })
+                } elseif ($null -ne $mailboxAttrs) {
+                    $targets.Add($current)
+                }
             }
         }
 

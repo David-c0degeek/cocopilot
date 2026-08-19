@@ -119,6 +119,18 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         $record.head | Should -Be ("0" * 40)
         Test-Path (Join-Path $t ".gitignore") | Should -BeFalse
     }
+
+    It "refuses to initialize a mailbox in cocopilot's own installed repo" {
+        # $script:repoRoot is this checkout's own root - exactly what
+        # $PSScriptRoot's parent resolves to inside init-mailbox.ps1 when it
+        # runs from here. Regression test for pairing cocopilot on itself
+        # (-RepoPath . from inside the cocopilot repo), which must be
+        # refused before anything is touched.
+        { & $script:initScript -RepoPath $script:repoRoot -AllowNonGit *>$null } | Should -Throw "*cocopilot's own installed repo*"
+        Test-Path (Join-Path $script:repoRoot ".mailbox\implementer.example.json") | Should -BeTrue
+        Test-Path (Join-Path $script:repoRoot ".mailbox\lane.example.md") | Should -BeTrue
+        Test-Path (Join-Path $script:repoRoot ".mailbox\implementer.json") | Should -BeFalse
+    }
 }
 
 Describe "watch-mailbox.ps1 (R1) - child process" {
@@ -206,6 +218,15 @@ Describe "cleanup-mailbox.ps1 (R0)" {
         & $script:cleanupScript -RepoPath $t -Confirm:$false *>$null
         Test-Path (Join-Path $t ".mailbox") | Should -BeFalse
         Test-Path (Join-Path $t ".gitignore") | Should -BeFalse
+    }
+
+    It "refuses to clean up cocopilot's own installed repo" {
+        # Regression test for running cocopilot-cleanup -RepoPath . from
+        # inside the cocopilot repo itself: its .mailbox/ intentionally
+        # tracks the *.example.* templates and must never be wiped.
+        { & $script:cleanupScript -RepoPath $script:repoRoot -Confirm:$false *>$null } | Should -Throw "*cocopilot's own installed repo*"
+        Test-Path (Join-Path $script:repoRoot ".mailbox\implementer.example.json") | Should -BeTrue
+        Test-Path (Join-Path $script:repoRoot ".mailbox\lane.example.md") | Should -BeTrue
     }
 }
 
@@ -346,6 +367,21 @@ Describe "cleanup-mailbox.ps1 -Recurse" {
 
         Test-Path (Join-Path $good ".mailbox") | Should -BeFalse
         Test-Path (Join-Path $bad ".mailbox") | Should -BeTrue
+    }
+
+    It "excludes cocopilot's own installed repo from -Recurse targets, without deleting its templates" {
+        # Regression test for `cocopilot-cleanup -RepoPath <workspace> -Recurse`
+        # walking over a workspace that contains the cocopilot checkout
+        # itself (e.g. run from one level up): it must be reported as a
+        # discovery issue, never treated as a cleanup target, and its
+        # tracked templates must survive.
+        $outFile = Join-Path $TestDrive "recurse-self-output.txt"
+        { & $script:cleanupScript -RepoPath $script:repoRoot -Recurse -Confirm:$false *> $outFile } | Should -Throw
+        $output = Get-Content -Raw $outFile
+        $output | Should -Match "Mailboxes found:\s*0"
+        $output | Should -Match "cocopilot's own installed repo"
+        Test-Path (Join-Path $script:repoRoot ".mailbox\implementer.example.json") | Should -BeTrue
+        Test-Path (Join-Path $script:repoRoot ".mailbox\lane.example.md") | Should -BeTrue
     }
 }
 

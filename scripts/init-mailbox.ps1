@@ -23,6 +23,11 @@
     accidentally committed to that project's real history even if init is
     interrupted mid-write.
 
+    Refuses outright, before any of the above, if -RepoPath resolves to
+    cocopilot's own installed repo: that repo is a tool you pair *from*,
+    never a project you pair *on*, and its .mailbox/ intentionally tracks
+    the two *.example.* templates this script reads from above.
+
 .PARAMETER RepoPath
     The repository to pair on. Defaults to the current directory.
 
@@ -61,6 +66,16 @@ $ErrorActionPreference = "Stop"
 
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
 $cocopilotRoot = Split-Path -Parent $PSScriptRoot
+
+# Refuse FIRST, before any side effect: cocopilot's own installed repo is
+# never a pairing target. Its .mailbox/ only ever holds the two tracked
+# *.example.* templates this script reads from below - initializing a real
+# mailbox there would collide with them, and cleanup-mailbox.ps1 would later
+# see tracked files under .mailbox/ and (correctly) refuse to touch them too.
+if ($RepoPath.TrimEnd('\', '/') -ieq $cocopilotRoot.TrimEnd('\', '/')) {
+    throw ("'$RepoPath' is cocopilot's own installed repo, not a project you're pairing on. " +
+        "cd into the project repo you want to pair on (or pass it as -RepoPath) and run this there instead.")
+}
 
 $mailboxDir = Join-Path $RepoPath ".mailbox"
 $implementerPath = Join-Path $mailboxDir "implementer.json"
