@@ -277,6 +277,17 @@ lane, ever** — the peer's lane is read-only to it. One writer per file is
 what makes simultaneous work safe: there is nothing to race, so both
 agents can post at the same moment without clobbering each other.
 
+This lane identity (which of `agent-a`/`agent-b` you are) is fixed for
+the entire session — set once, at launch, by which banner/prompt you
+were started with — and is a **completely different axis** from driver
+vs. navigator responsibility, which **does** rotate via handoff (see
+"Ownership handoff" below). Becoming the active implementer never makes
+you "agent-a"; it makes you the driver, while your lane identity (and
+therefore which file you may write) stays exactly what it always was.
+Before every lane write, the file you are about to write must literally
+match your own role from the session banner — never infer it from
+whether you currently happen to be driving or navigating.
+
 A lane holds its agent's current turn only and is overwritten on each of
 that agent's writes. `.mailbox/session.log.md` is the write-once merged
 history of the session; every entry an agent writes to its lane (THINKING /
@@ -290,11 +301,31 @@ lane **last**. Each agent's watcher observes the peer's lane and the
 ownership record, so a peer woken by a lane change always finds the log
 entry already present. Log-only appends deliberately do not wake the peer.
 
+The preferred way to post a lane entry is the session banner's own **Lane
+write command** — `scripts/write-lane.ps1 -RepoPath <repo> -Role <your
+role> -Turn $turn`, with `-Role` already baked into the exact command
+your banner gives you. Build `$turn` as the raw entry body (no timestamp,
+no `## ...` heading — the script generates that itself from `-Role`),
+then run the given command verbatim, without editing `-Role`. Because
+the destination lane is derived from a `-Role` value that is already
+correct by construction in your own banner, this removes the class of
+error where a hand-typed file path (`agent-a.md` vs. `agent-b.md`) is
+silently wrong when the command is run as given. It does **not**
+authenticate the caller: `-Role` is a normal parameter that accepts
+either valid value, so it cannot turn a wrong-but-valid `-Role` into an
+error — that would need a separate, not-yet-built identity mechanism.
+Lane identity vs. driver/navigator responsibility (above) is the
+discipline that prevents that mistake in the first place. It performs
+exactly the write order above (log first, lane last), retries only a
+genuine sharing violation, and never repeats the log append once it has
+already succeeded.
+
 The write operation is fixed too: both hosts must produce identical UTF-8
-(no BOM) bytes, so use exactly these .NET calls — not `Add-Content`,
-`Set-Content`, or `>>` redirection, whose default encodings differ between
-Windows PowerShell 5.1 and pwsh 7 and can corrupt non-ASCII content in a
-BOM-less file:
+(no BOM) bytes. `write-lane.ps1` already guarantees this; the recipe
+below is the documented **emergency fallback** for when the script itself
+is unavailable or broken — never `Add-Content`, `Set-Content`, or `>>`
+redirection, whose default encodings differ between Windows PowerShell
+5.1 and pwsh 7 and can corrupt non-ASCII content in a BOM-less file:
 
 ```powershell
 $utf8 = [System.Text.UTF8Encoding]::new($false)
@@ -306,7 +337,8 @@ Because both agents may append to the log near-simultaneously, an append
 can fail with a sharing violation (`IOException`) while the peer's append
 is in flight. That is expected, not corruption: wait about a second and
 retry (a few attempts, then surface the error to the user) — never fall
-back to `Add-Content` or `>>`.
+back to `Add-Content` or `>>`. `write-lane.ps1` already implements this
+retry for you.
 
 Never edit or delete existing log content. `init-mailbox.ps1 -Force` resets
 the lanes and ownership record but preserves an existing log,

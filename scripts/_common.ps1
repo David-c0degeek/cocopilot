@@ -169,10 +169,12 @@ function Get-CocopilotSessionBanner {
     $collaborationPath = Join-Path $CocopilotRoot "COLLABORATION.md"
     $watchScript = Join-Path $CocopilotRoot "scripts\watch-mailbox.ps1"
     $initScript = Join-Path $CocopilotRoot "scripts\init-mailbox.ps1"
+    $writeLaneScript = Join-Path $CocopilotRoot "scripts\write-lane.ps1"
     $commonScript = Join-Path $CocopilotRoot "scripts\_common.ps1"
     $implementerJson = Join-Path $RepoPath ".mailbox\implementer.json"
     $watchCmd = "& $(ConvertTo-SingleQuoted $watchScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath) -Role $AgentRole"
     $initCmd = Get-CocopilotInitCommand -RepoPath $RepoPath -InitScript $initScript
+    $writeLaneCmd = "& $(ConvertTo-SingleQuoted $writeLaneScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath) -Role $AgentRole -Turn `$turn"
     $ownershipCmd = ". $(ConvertTo-SingleQuoted $commonScript); Write-MailboxJson -Path $(ConvertTo-SingleQuoted $implementerJson) -Object `$record"
 
     $core = @"
@@ -219,6 +221,14 @@ function Get-CocopilotSessionBanner {
 - Your lane (the ONLY mailbox file you may write): $myLane
 - Peer lane (read-only to you): $peerLane
 
+- Lane write command (the preferred way to post a lane entry — build
+  `$turn as the raw turn body first, no timestamp or "## ..." heading
+  of your own, then run verbatim; appends to the session log FIRST and
+  overwrites your own lane LAST, exactly as the protocol requires. Run
+  EXACTLY as given below — -Role is already correct for you here, but
+  the command cannot itself verify who is calling it, so never edit the
+  -Role value):
+  $writeLaneCmd
 - Watch command (wakes only on peer-lane/ownership changes — run in the
   background whenever you're blocked waiting on the peer):
   $watchCmd

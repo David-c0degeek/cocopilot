@@ -41,12 +41,20 @@ Before doing anything else:
 
 Lane discipline (this is what makes simultaneous work safe):
 
+- Your lane identity (agent-a) is fixed for the whole session and is a
+  different axis from driver/navigator responsibility, which DOES rotate
+  via handoff. Becoming the driver never makes you "agent-a" — you
+  already are, for this entire session. Before every write, the file you
+  are about to write must literally match your own role from the banner.
 - You write **only your own lane** (path in the banner), never the peer's.
-- Every lane entry is appended to the session log FIRST, your lane
-  overwritten LAST, using exactly the .NET write calls in the protocol's
-  "Mailbox lanes and the session log" section. If the log append throws a
-  sharing violation (the peer is appending at the same moment), wait a
-  second and retry.
+- Use the banner's **Lane write command** to post every entry: build
+  `$turn` as the raw body (no timestamp/heading — the command generates
+  that from your role), then run it verbatim. It appends to the session
+  log FIRST and overwrites your lane LAST for you, retrying only a
+  genuine sharing violation. If it's ever unavailable, fall back to the
+  raw .NET calls in the protocol's "Mailbox lanes and the session log"
+  section (same write order; retry a sharing violation on the log append
+  yourself).
 
 Listening for peer changes (do this instead of waiting to be re-prompted):
 

@@ -125,7 +125,7 @@ Every prompt is generic — a **session-context banner** (generated per run) inj
 
 ## Command reference
 
-All five user-facing commands live in [`scripts/`](scripts), support `-RepoPath` (default: current directory), and run on **Windows PowerShell 5.1 and pwsh 7**. (`_common.ps1` is an internal helper, not a command.)
+All six user-facing commands live in [`scripts/`](scripts), take `-RepoPath` (default: current directory, except `write-lane.ps1` which requires it explicitly), and run on **Windows PowerShell 5.1 and pwsh 7**. (`_common.ps1` is an internal helper, not a command.)
 
 ### `init-mailbox.ps1` — set up a target repo
 
@@ -188,6 +188,20 @@ Blocks until a watched file changes (content hash, not mtime), then exits `0`. W
 | `-Role` | (none) | `agent-a` · `agent-b` — watch the peer's lane only |
 | `-TimeoutSeconds` | `0` (forever) | Exit 1 after this much silence |
 | `-PollIntervalSeconds` | `3` | Hash-check frequency |
+
+### `write-lane.ps1` — post one lane entry
+
+```powershell
+.\scripts\write-lane.ps1 -RepoPath C:\Repos\your-project -Role agent-a -Turn $turn
+```
+
+The preferred way to post a THINKING/PROPOSAL/SYNC/ACK/etc. entry: appends it to `session.log.md` **first**, then overwrites your own lane (`agent-a.md`/`agent-b.md`) **last** — the exact order the protocol requires — generating the UTC `## <timestamp> <role>` heading for you and preserving `-Turn`'s content exactly (no forced trailing newline). `-Role` determines both destination paths from a value already baked in by your own session banner, so running the given command verbatim removes hand-typed-path mistakes (`agent-a.md` vs. `agent-b.md`) — it does **not** authenticate the caller: `-Role` accepts either valid value, so a wrong-but-valid `-Role` is not itself an error (see COLLABORATION.md's identity-vs-responsibility guidance for the discipline that prevents that). Retries a genuine sharing violation separately for each step (the peer appending at the same moment) — a failure on the lane overwrite never re-appends the log entry.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `-RepoPath` | *(required)* | Unlike the other five commands, no current-directory default — normally invoked with the exact path from the session banner |
+| `-Role` | *(required)* | `agent-a` · `agent-b` — which lane to write |
+| `-Turn` | *(required)* | Raw entry body — no timestamp or `## ...` heading, generated internally |
 
 ### `render-prompt.ps1` — manual launch / add a role to an open session
 
@@ -258,17 +272,18 @@ scripts/
   init-mailbox.ps1            create <RepoPath>/.mailbox/*
   start-agents.ps1            launch both copilot windows
   watch-mailbox.ps1           block until the peer writes
+  write-lane.ps1              post one lane entry (log first, lane last)
   render-prompt.ps1           print a role prompt for manual paste
   cleanup-mailbox.ps1         remove cocopilot's footprint from a target
 tests/
-  Cocopilot.Tests.ps1         Pester 5 suite (44 tests, both hosts)
+  Cocopilot.Tests.ps1         Pester 5 suite (51 tests, both hosts)
 ```
 
 The real `.mailbox/` state is created **inside each target repo** (git-ignored there); cocopilot's own repo only tracks the two `*.example.*` templates.
 
 ## Tests
 
-44 black-box Pester 5 tests cover init (creation, idempotency, `-Force` log preservation, the non-git refusal + `-AllowNonGit` fallback with its distinct `non-git-root` sentinel vs. a real git-repo-no-commits zero SHA, refusing cocopilot's own installed repo), the watcher (child-process wake/no-wake, including `-Role` peer-lane filtering: peer's lane wakes it, its own lane doesn't), cleanup (exact block removal, CRLF + LF, refusing cocopilot's own installed repo), recursive cleanup (root + nested targets, `.git`/`node_modules` exclusion, the reparse-point cycle/escape/linked-`.mailbox` guard, excluding cocopilot's own installed repo from discovery, `-WhatIf` preserving every discovered target, per-target failure continuation with a throw only after every attempt completes), all three prompt renders (with and without `-ContextRoot`, and the banner's init command including/omitting `-AllowNonGit` to match the target), the `_common.ps1` helpers backing the workspace-root/session-name/Windows-Terminal-tab features (`Get-CocopilotInitCommand`, `Resolve-CocopilotAgentName`, `Get-CocopilotWindowTitleStatement`, `Get-CocopilotWtNewTabArgs`), the installer (fresh + idempotent profile registration, snippet parse), and whole-file JSON replacement with temp-file cleanup.
+51 black-box Pester 5 tests cover init (creation, idempotency, `-Force` log preservation, the non-git refusal + `-AllowNonGit` fallback with its distinct `non-git-root` sentinel vs. a real git-repo-no-commits zero SHA, refusing cocopilot's own installed repo), the watcher (child-process wake/no-wake, including `-Role` peer-lane filtering: peer's lane wakes it, its own lane doesn't), `write-lane.ps1` (both roles' own-lane-only writes with the peer lane untouched, exactly one correctly-headed log entry at the exact tail with prior content preserved, `-Turn`'s content preserved exactly whether or not it already ends in a newline — never a doubled newline in either the lane or the log, BOM-less UTF-8, an invalid `-Role` rejected before any file is touched), cleanup (exact block removal, CRLF + LF, refusing cocopilot's own installed repo), recursive cleanup (root + nested targets, `.git`/`node_modules` exclusion, the reparse-point cycle/escape/linked-`.mailbox` guard, excluding cocopilot's own installed repo from discovery, `-WhatIf` preserving every discovered target, per-target failure continuation with a throw only after every attempt completes), all three prompt renders (with and without `-ContextRoot`, the banner's init command including/omitting `-AllowNonGit` to match the target, and the agent-only `Lane write command` excluded from the verifier banner), the `_common.ps1` helpers backing the workspace-root/session-name/Windows-Terminal-tab features (`Get-CocopilotInitCommand`, `Resolve-CocopilotAgentName`, `Get-CocopilotWindowTitleStatement`, `Get-CocopilotWtNewTabArgs`), the installer (fresh + idempotent profile registration, snippet parse), and whole-file JSON replacement with temp-file cleanup.
 
 **Prerequisite:** Pester 5 side-by-side per host — Windows PowerShell 5.1 ships inbox Pester 3.4 only:
 

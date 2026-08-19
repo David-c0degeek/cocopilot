@@ -21,6 +21,7 @@ BeforeAll {
     $script:scriptsDir = Join-Path $script:repoRoot "scripts"
     $script:initScript = Join-Path $script:scriptsDir "init-mailbox.ps1"
     $script:watchScript = Join-Path $script:scriptsDir "watch-mailbox.ps1"
+    $script:writeLaneScript = Join-Path $script:scriptsDir "write-lane.ps1"
     $script:cleanupScript = Join-Path $script:scriptsDir "cleanup-mailbox.ps1"
     $script:renderScript = Join-Path $script:scriptsDir "render-prompt.ps1"
     $script:utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -193,6 +194,102 @@ Describe "watch-mailbox.ps1 (R1) - child process" {
         }.GetNewClosure()
         $result.Output | Should -Match "MAILBOX_WATCH_TIMEOUT"
         $result.ExitCode | Should -Be 1
+    }
+}
+
+Describe "write-lane.ps1" {
+    It "writes agent-a's turn to its own lane exactly, and leaves agent-b's lane untouched" {
+        $t = New-FakeTarget "writelane-a"
+        & $script:initScript -RepoPath $t *>$null
+        $laneA = Join-Path $t ".mailbox\agent-a.md"
+        $laneB = Join-Path $t ".mailbox\agent-b.md"
+        $laneBBefore = Get-Content -Raw $laneB
+
+        & $script:writeLaneScript -RepoPath $t -Role "agent-a" -Turn "SYNC #1`nhello"
+
+        (Get-Content -Raw $laneA) | Should -Be "SYNC #1`nhello"
+        (Get-Content -Raw $laneB) | Should -Be $laneBBefore
+    }
+
+    It "writes agent-b's turn to its own lane exactly, and leaves agent-a's lane untouched" {
+        $t = New-FakeTarget "writelane-b"
+        & $script:initScript -RepoPath $t *>$null
+        $laneA = Join-Path $t ".mailbox\agent-a.md"
+        $laneB = Join-Path $t ".mailbox\agent-b.md"
+        $laneABefore = Get-Content -Raw $laneA
+
+        & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "ACK #1"
+
+        (Get-Content -Raw $laneB) | Should -Be "ACK #1"
+        (Get-Content -Raw $laneA) | Should -Be $laneABefore
+    }
+
+    It "appends exactly one correctly-headed log entry at the exact tail, preserving prior content" {
+        $t = New-FakeTarget "writelane-log"
+        & $script:initScript -RepoPath $t *>$null
+        $logPath = Join-Path $t ".mailbox\session.log.md"
+        $logBefore = Get-Content -Raw $logPath
+
+        & $script:writeLaneScript -RepoPath $t -Role "agent-a" -Turn "SYNC #7`nbody text"
+
+        $logAfter = Get-Content -Raw $logPath
+        # Prefix must be byte-for-byte unchanged...
+        $logAfter.Substring(0, $logBefore.Length) | Should -Be $logBefore
+        # ...and everything after that exact offset must be ONE well-formed
+        # entry, anchored start-to-end - not zero, not two, not appended
+        # anywhere but the tail.
+        $appended = $logAfter.Substring($logBefore.Length)
+        $appended | Should -Match "^`n## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z agent-a`nSYNC #7`nbody text$"
+    }
+
+    It "preserves a turn that does NOT already end in a newline (no forced trailing newline in the lane; log gets exactly one separator)" {
+        $t = New-FakeTarget "writelane-noeol"
+        & $script:initScript -RepoPath $t *>$null
+        $lanePath = Join-Path $t ".mailbox\agent-a.md"
+        $logPath = Join-Path $t ".mailbox\session.log.md"
+        $logBefore = Get-Content -Raw $logPath
+
+        & $script:writeLaneScript -RepoPath $t -Role "agent-a" -Turn "STATUS`nno trailing newline here"
+
+        (Get-Content -Raw $lanePath) | Should -Be "STATUS`nno trailing newline here"
+        $appended = (Get-Content -Raw $logPath).Substring($logBefore.Length)
+        $appended | Should -Match "^`n## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z agent-a`nSTATUS`nno trailing newline here`n$"
+    }
+
+    It "preserves a turn that already ends in a newline (no doubled newline in lane or log)" {
+        $t = New-FakeTarget "writelane-eol"
+        & $script:initScript -RepoPath $t *>$null
+        $lanePath = Join-Path $t ".mailbox\agent-a.md"
+        $logPath = Join-Path $t ".mailbox\session.log.md"
+        $logBefore = Get-Content -Raw $logPath
+
+        & $script:writeLaneScript -RepoPath $t -Role "agent-a" -Turn "STATUS`nalready ends in newline`n"
+
+        (Get-Content -Raw $lanePath) | Should -Be "STATUS`nalready ends in newline`n"
+        $appended = (Get-Content -Raw $logPath).Substring($logBefore.Length)
+        $appended | Should -Match "^`n## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z agent-a`nSTATUS`nalready ends in newline`n$"
+    }
+
+    It "writes both the log and the lane without a BOM" {
+        $t = New-FakeTarget "writelane-bom"
+        & $script:initScript -RepoPath $t *>$null
+        & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "ACK #1"
+        $logBytes = [System.IO.File]::ReadAllBytes((Join-Path $t ".mailbox\session.log.md"))
+        $logBytes[0] | Should -Not -Be 0xEF
+        $laneBytes = [System.IO.File]::ReadAllBytes((Join-Path $t ".mailbox\agent-b.md"))
+        $laneBytes[0] | Should -Not -Be 0xEF
+    }
+
+    It "rejects an invalid -Role before touching any file" {
+        $t = New-FakeTarget "writelane-badrole"
+        & $script:initScript -RepoPath $t *>$null
+        $logBefore = Get-Content -Raw (Join-Path $t ".mailbox\session.log.md")
+        $laneABefore = Get-Content -Raw (Join-Path $t ".mailbox\agent-a.md")
+        $laneBBefore = Get-Content -Raw (Join-Path $t ".mailbox\agent-b.md")
+        { & $script:writeLaneScript -RepoPath $t -Role "agent-c" -Turn "x" *>$null } | Should -Throw
+        (Get-Content -Raw (Join-Path $t ".mailbox\session.log.md")) | Should -Be $logBefore
+        (Get-Content -Raw (Join-Path $t ".mailbox\agent-a.md")) | Should -Be $laneABefore
+        (Get-Content -Raw (Join-Path $t ".mailbox\agent-b.md")) | Should -Be $laneBBefore
     }
 }
 
@@ -410,6 +507,9 @@ Describe "render-prompt.ps1 (R4)" {
         $out | Should -Match "-Role agent-a"
         $out | Should -Match "Init command"
         $out | Should -Match "Ownership-record update"
+        $out | Should -Match "Lane write command"
+        $out | Should -Match ([regex]::Escape("write-lane.ps1"))
+        $out | Should -Match ([regex]::Escape("-Role agent-a -Turn"))
         $out | Should -Match "Your lane"
         $out | Should -Match ([regex]::Escape("agent-a.md"))
         $out | Should -Match "Peer lane"
@@ -422,6 +522,8 @@ Describe "render-prompt.ps1 (R4)" {
         $out | Should -Not -Match "Init command"
         $out | Should -Not -Match "Ownership-record update"
         $out | Should -Not -Match "Watch command"
+        $out | Should -Not -Match "Lane write command"
+        $out | Should -Not -Match ([regex]::Escape("write-lane.ps1"))
     }
 
     It "includes the workspace context root when -ContextRoot is passed" {
