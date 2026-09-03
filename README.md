@@ -39,7 +39,7 @@ The installer updates the clone (`git pull --ff-only`) and adds a tiny marker-gu
 | `cocopilot-prompt -Agent a\|b\|verifier [-RepoPath] [-ContextRoot] [-AllowNonGit]` | Copies that role's paste-ready (re)start prompt to the clipboard — for crashed windows, manual role adds, or a fresh verifier session. |
 | `cocopilot-cleanup [-RepoPath] [-Recurse] [-WhatIf]` | Removes `.mailbox\` + its `.gitignore` rule when you're done. `-Recurse` cleans every paired repo under `-RepoPath`. |
 | `cocopilot-update` | `git pull` + re-register (reruns the installer). |
-| `copilot-sonnet` / `copilot-terra` | Plain `copilot` launchers with cocopilot's default model/flags. |
+| `copilot-sonnet` / `copilot-sol` / `copilot-terra` | Plain `copilot` launchers with cocopilot's default model/flags. |
 
 ## Quick start
 
@@ -56,7 +56,7 @@ C:\Repos\cocopilot\scripts\start-agents.ps1 -RepoPath C:\Repos\your-project
 C:\Repos\cocopilot\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos\your-project
 ```
 
-That's it. Agent A starts as the driver on `claude-sonnet-5`, Agent B navigates on `gpt-5.6-terra` (both overridable), and they coordinate through `.mailbox/` inside your target repo — git-ignored automatically, removed completely by cleanup.
+That's it. Agent A starts as the driver on `claude-sonnet-5`, Agent B navigates on `gpt-5.6-sol` with maximum effort and long context (both overridable), and they coordinate through `.mailbox/` inside your target repo — git-ignored automatically, removed completely by cleanup.
 
 > `-RepoPath` defaults to the current directory, so you can also just `cd` into the target project first.
 
@@ -158,7 +158,7 @@ Safe to re-run: existing files are left alone without `-Force`.
 # use your own $PROFILE shortcut functions instead
 .\scripts\start-agents.ps1 -RepoPath C:\Repos\your-project `
     -AgentACommand copilot-sonnet -AgentAArgs @() `
-    -AgentBCommand copilot-terra  -AgentBArgs @()
+    -AgentBCommand copilot-sol  -AgentBArgs @()
 ```
 
 By default, opens two terminal windows, each running a literal `copilot` invocation (no profile magic required) with role prompt + banner injected via `-i`, working directory set to the target repo, and read access back to the cocopilot install via `--add-dir`. Whenever `wt.exe` (Windows Terminal) is on PATH, both agents open as tabs in the most-recently-used wt.exe window — typically the very window you ran this from — instead of separate OS windows; pass `-UseWindowsTerminal:$false` to force plain console windows regardless.
@@ -168,7 +168,7 @@ By default, opens two terminal windows, each running a literal `copilot` invocat
 | `-ContextRoot` | (none) | Workspace folder (e.g. a parent dir of many repos) granted as a **read-only search scope** via an extra `--add-dir` + banner note — cross-repo context without widening ownership or writes |
 | `-AgentACommand` / `-AgentBCommand` | `copilot` | Executable or profile function per agent |
 | `-AgentAArgs` | `@("--model","claude-sonnet-5","--effort","max","--context","long_context","--autopilot","--allow-all")` | Complete argument array before `-C/-n/-i`; supplying it **replaces** the entire default. Pass `@()` when a profile function supplies its own flags |
-| `-AgentBArgs` | `@("--model","gpt-5.6-terra","--effort","max","--context","long_context","--autopilot","--allow-all")` | Same rules as `-AgentAArgs` |
+| `-AgentBArgs` | `@("--model","gpt-5.6-sol","--effort","max","--context","long_context","--autopilot","--allow-all")` | Same rules as `-AgentAArgs` |
 | `-NameA` / `-NameB` | `cocopilot-agent-a/b` | Session names, and each new window/tab's title. An explicit value always wins; otherwise derived from `-SessionName` |
 | `-SessionName` | (none) | Convenience prefix for both `-NameA`/`-NameB` at once — e.g. `-SessionName claim` yields `claim-agent-a` / `claim-agent-b` — so several concurrent pairings stay identifiable by window/tab title at a glance |
 | `-UseWindowsTerminal` | `$true` | `wt.exe` tabs whenever available (silently falls back to plain console windows otherwise — a no-op default for anyone without Windows Terminal); pass `-UseWindowsTerminal:$false` to force plain windows even when `wt.exe` is installed |
@@ -276,14 +276,14 @@ scripts/
   render-prompt.ps1           print a role prompt for manual paste
   cleanup-mailbox.ps1         remove cocopilot's footprint from a target
 tests/
-  Cocopilot.Tests.ps1         Pester 5 suite (51 tests, both hosts)
+  Cocopilot.Tests.ps1         Pester 5 suite (53 tests, both hosts)
 ```
 
 The real `.mailbox/` state is created **inside each target repo** (git-ignored there); cocopilot's own repo only tracks the two `*.example.*` templates.
 
 ## Tests
 
-51 black-box Pester 5 tests cover init (creation, idempotency, `-Force` log preservation, the non-git refusal + `-AllowNonGit` fallback with its distinct `non-git-root` sentinel vs. a real git-repo-no-commits zero SHA, refusing cocopilot's own installed repo), the watcher (child-process wake/no-wake, including `-Role` peer-lane filtering: peer's lane wakes it, its own lane doesn't), `write-lane.ps1` (both roles' own-lane-only writes with the peer lane untouched, exactly one correctly-headed log entry at the exact tail with prior content preserved, `-Turn`'s content preserved exactly whether or not it already ends in a newline — never a doubled newline in either the lane or the log, BOM-less UTF-8, an invalid `-Role` rejected before any file is touched), cleanup (exact block removal, CRLF + LF, refusing cocopilot's own installed repo), recursive cleanup (root + nested targets, `.git`/`node_modules` exclusion, the reparse-point cycle/escape/linked-`.mailbox` guard, excluding cocopilot's own installed repo from discovery, `-WhatIf` preserving every discovered target, per-target failure continuation with a throw only after every attempt completes), all three prompt renders (with and without `-ContextRoot`, the banner's init command including/omitting `-AllowNonGit` to match the target, and the agent-only `Lane write command` excluded from the verifier banner), the `_common.ps1` helpers backing the workspace-root/session-name/Windows-Terminal-tab features (`Get-CocopilotInitCommand`, `Resolve-CocopilotAgentName`, `Get-CocopilotWindowTitleStatement`, `Get-CocopilotWtNewTabArgs`), the installer (fresh + idempotent profile registration, snippet parse), and whole-file JSON replacement with temp-file cleanup.
+53 black-box Pester 5 tests cover init (creation, idempotency, `-Force` log preservation, the non-git refusal + `-AllowNonGit` fallback with its distinct `non-git-root` sentinel vs. a real git-repo-no-commits zero SHA, refusing cocopilot's own installed repo), the watcher (child-process wake/no-wake, including `-Role` peer-lane filtering: peer's lane wakes it, its own lane doesn't), `write-lane.ps1` (both roles' own-lane-only writes with the peer lane untouched, exactly one correctly-headed log entry at the exact tail with prior content preserved, `-Turn`'s content preserved exactly whether or not it already ends in a newline — never a doubled newline in either the lane or the log, BOM-less UTF-8, an invalid `-Role` rejected before any file is touched), cleanup (exact block removal, CRLF + LF, refusing cocopilot's own installed repo), recursive cleanup (root + nested targets, `.git`/`node_modules` exclusion, the reparse-point cycle/escape/linked-`.mailbox` guard, excluding cocopilot's own installed repo from discovery, `-WhatIf` preserving every discovered target, per-target failure continuation with a throw only after every attempt completes), all three prompt renders (with and without `-ContextRoot`, the banner's init command including/omitting `-AllowNonGit` to match the target, and the agent-only `Lane write command` excluded from the verifier banner), the `_common.ps1` helpers backing the workspace-root/session-name/Windows-Terminal-tab features (`Get-CocopilotInitCommand`, `Resolve-CocopilotAgentName`, `Get-CocopilotWindowTitleStatement`, `Get-CocopilotWtNewTabArgs`), the installer (fresh + idempotent profile registration, snippet parse), and whole-file JSON replacement with temp-file cleanup.
 
 **Prerequisite:** Pester 5 side-by-side per host — Windows PowerShell 5.1 ships inbox Pester 3.4 only:
 

@@ -24,6 +24,7 @@ BeforeAll {
     $script:writeLaneScript = Join-Path $script:scriptsDir "write-lane.ps1"
     $script:cleanupScript = Join-Path $script:scriptsDir "cleanup-mailbox.ps1"
     $script:renderScript = Join-Path $script:scriptsDir "render-prompt.ps1"
+    $script:startScript = Join-Path $script:scriptsDir "start-agents.ps1"
     $script:utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
     . (Join-Path $script:scriptsDir "_common.ps1")
@@ -622,6 +623,31 @@ Describe "install.ps1 + profile snippet" {
         $tokens = $errors = $null
         [System.Management.Automation.Language.Parser]::ParseFile($script:snippetPath, [ref]$tokens, [ref]$errors) | Out-Null
         @($errors).Count | Should -Be 0
+    }
+
+    It "defines a copilot-sol shortcut with Sol long-context defaults" {
+        $arguments = & {
+            function copilot { $args -join "|" }
+            . $script:snippetPath
+            copilot-sol "extra-argument"
+        }
+
+        $arguments | Should -Be "--model|gpt-5.6-sol|--effort|max|--context|long_context|--autopilot|--allow-all|extra-argument"
+    }
+
+    It "launches agent-b with Sol maximum long-context defaults" {
+        $t = New-FakeTarget "start-default-sol"
+        & $script:initScript -RepoPath $t *>$null
+        Mock Start-Process
+        Mock Start-Sleep
+
+        & $script:startScript -RepoPath $t -ShellExe "powershell.exe" -UseWindowsTerminal:$false *>$null
+
+        Should -Invoke Start-Process -Times 2 -Exactly
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+            $invocation = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[2]))
+            $invocation -match [regex]::Escape("'--model' 'gpt-5.6-sol' '--effort' 'max' '--context' 'long_context' '--autopilot' '--allow-all'")
+        }
     }
 
     It "writes a marker-guarded dot-source block into a fresh profile" {

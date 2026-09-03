@@ -4,7 +4,7 @@
     Installs or updates cocopilot on this machine: updates the git clone
     (when possible) and registers the profile functions (cocopilot-start,
     cocopilot-prompt, cocopilot-cleanup, cocopilot-update, copilot-sonnet,
-    copilot-terra) in your PowerShell profile.
+    copilot-terra, copilot-sol) in your PowerShell profile.
 
 .DESCRIPTION
     Two ways to run it:
@@ -112,5 +112,5 @@ if (Test-Path -LiteralPath $ProfilePath) {
 }
 
 Write-Host "$action $ProfilePath" -ForegroundColor Green
-Write-Host "Functions: cocopilot-start, cocopilot-prompt, cocopilot-cleanup, cocopilot-update, copilot-sonnet, copilot-terra" -ForegroundColor Green
+Write-Host "Functions: cocopilot-start, cocopilot-prompt, cocopilot-cleanup, cocopilot-update, copilot-sonnet, copilot-terra, copilot-sol" -ForegroundColor Green
 Write-Host "Restart your shell (or run: . '$snippetPath') to use them now. Run this installer once per PowerShell edition you use (pwsh / Windows PowerShell)." -ForegroundColor Cyan

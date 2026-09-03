@@ -71,8 +71,8 @@
 
 .PARAMETER AgentBArgs
     Extra arguments appended after AgentBCommand, before -C/-n/-i. Defaults
-    to a literal gpt-5.6-terra configuration:
-    --model gpt-5.6-terra --effort max --context long_context --autopilot
+    to a literal gpt-5.6-sol configuration:
+    --model gpt-5.6-sol --effort max --context long_context --autopilot
     --allow-all. Pass @() if AgentBCommand is your own shortcut.
 
 .PARAMETER UseWindowsTerminal
@@ -118,10 +118,10 @@
 .EXAMPLE
     .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project
     # works out of the box: agent-a and agent-b both via the real `copilot`
-    # CLI, claude-sonnet-5 and gpt-5.6-terra respectively, paired on that repo
+    # CLI, claude-sonnet-5 and gpt-5.6-sol respectively, paired on that repo
 
 .EXAMPLE
-    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentACommand copilot-sonnet -AgentAArgs @() -AgentBCommand copilot-terra -AgentBArgs @() -UseWindowsTerminal:$false
+    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentACommand copilot-sonnet -AgentAArgs @() -AgentBCommand copilot-sol -AgentBArgs @() -UseWindowsTerminal:$false
     # use your own PowerShell profile shortcuts instead of the literal
     # defaults, and force plain console windows instead of wt.exe tabs
 
@@ -136,7 +136,7 @@ param(
     [string]$AgentACommand = "copilot",
     [string[]]$AgentAArgs = @("--model", "claude-sonnet-5", "--effort", "max", "--context", "long_context", "--autopilot", "--allow-all"),
     [string]$AgentBCommand = "copilot",
-    [string[]]$AgentBArgs = @("--model", "gpt-5.6-terra", "--effort", "max", "--context", "long_context", "--autopilot", "--allow-all"),
+    [string[]]$AgentBArgs = @("--model", "gpt-5.6-sol", "--effort", "max", "--context", "long_context", "--autopilot", "--allow-all"),
     [string]$NameA = "cocopilot-agent-a",
     [string]$NameB = "cocopilot-agent-b",
     [string]$SessionName,

@@ -15,6 +15,11 @@ function copilot-terra {
     copilot --model gpt-5.6-terra --effort max --context long_context --autopilot --allow-all @args
 }
 
+function copilot-sol {
+    # Plain copilot CLI pinned to gpt-5.6-sol with cocopilot's default flags.
+    copilot --model gpt-5.6-sol --effort max --context long_context --autopilot --allow-all @args
+}
+
 function Initialize-CocopilotMailboxIfMissing {
     param(
         [Parameter(Mandatory)][string]$RepoPath,
@@ -57,7 +62,7 @@ function cocopilot-start {
 function cocopilot-prompt {
     # Copies the paste-ready (re)start prompt for one role to the clipboard —
     # session-context banner + role instructions, fully resolved to
-    # $RepoPath. Paste into a fresh copilot-sonnet/copilot-terra window if
+    # $RepoPath. Paste into a fresh copilot-sonnet/copilot-sol window if
     # one crashes or you add a role manually; "verifier" renders the
     # read-only fresh-eyes role for a brand-new session. -AllowNonGit pairs
     # directly on a workspace root that isn't itself a git repo (see
