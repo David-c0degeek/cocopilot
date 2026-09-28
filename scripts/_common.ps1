@@ -88,8 +88,8 @@ function Resolve-CocopilotAgentName {
     .SYNOPSIS
         Resolves the effective session/window name for one agent: an
         explicitly-bound -NameA/-NameB always wins; otherwise -SessionName
-        (if given) derives "<SessionName>-<AgentRole>"; otherwise the
-        caller's own inline default (already in $CurrentValue) stands.
+        (if given) derives "<SessionName> - agent a/b"; otherwise the caller's
+        own inline default (already in $CurrentValue) stands.
     #>
     param(
         [Parameter(Mandatory)][string]$CurrentValue,
@@ -98,8 +98,9 @@ function Resolve-CocopilotAgentName {
         [Parameter(Mandatory)][ValidateSet("agent-a", "agent-b")][string]$AgentRole
     )
 
-    if (-not $ExplicitlyBound -and $SessionName) {
-        return "$SessionName-$AgentRole"
+    if (-not $ExplicitlyBound -and -not [string]::IsNullOrWhiteSpace($SessionName)) {
+        $displayRole = $AgentRole -replace "-", " "
+        return "$($SessionName.Trim()) - $displayRole"
     }
     return $CurrentValue
 }
@@ -114,6 +115,54 @@ function Get-CocopilotWindowTitleStatement {
     #>
     param([Parameter(Mandatory)][string]$Title)
     return "`$host.UI.RawUI.WindowTitle = $(ConvertTo-SingleQuoted $Title); "
+}
+
+function ConvertTo-WindowsProcessArgument {
+    <#
+    .SYNOPSIS
+        Quotes one argument for APIs such as Start-Process -ArgumentList that
+        flatten an argument array into a single Windows command line.
+    #>
+    param([AllowEmptyString()][Parameter(Mandatory)][string]$Value)
+
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    $quoted = New-Object System.Text.StringBuilder
+    [void]$quoted.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') {
+            $backslashes++
+            continue
+        }
+
+        if ($character -eq '"') {
+            [void]$quoted.Append(('\' * (($backslashes * 2) + 1)))
+            [void]$quoted.Append('"')
+        } else {
+            if ($backslashes -gt 0) { [void]$quoted.Append(('\' * $backslashes)) }
+            [void]$quoted.Append($character)
+        }
+        $backslashes = 0
+    }
+
+    if ($backslashes -gt 0) { [void]$quoted.Append(('\' * ($backslashes * 2))) }
+    [void]$quoted.Append('"')
+    return $quoted.ToString()
+}
+
+function ConvertTo-CocopilotWtArgument {
+    <#
+    .SYNOPSIS
+        Escapes Windows Terminal's command separator, then applies normal
+        Windows process argument quoting.
+    #>
+    param([AllowEmptyString()][Parameter(Mandatory)][string]$Value)
+
+    $escapedForWindowsTerminal = $Value.Replace(";", "\;")
+    return ConvertTo-WindowsProcessArgument -Value $escapedForWindowsTerminal
 }
 
 function Get-CocopilotWtNewTabArgs {
@@ -141,7 +190,7 @@ function Get-CocopilotWtNewTabArgs {
         [Parameter(Mandatory)][string]$EncodedCommand
     )
 
-    return @(
+    $arguments = @(
         "-w", "0",
         "new-tab",
         "--title", $Title,
@@ -150,6 +199,7 @@ function Get-CocopilotWtNewTabArgs {
         "--",
         $ShellExe, "-NoExit", "-EncodedCommand", $EncodedCommand
     )
+    return @($arguments | ForEach-Object { ConvertTo-CocopilotWtArgument -Value $_ })
 }
 
 function Get-CocopilotSessionBanner {

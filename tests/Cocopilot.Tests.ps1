@@ -25,9 +25,11 @@ BeforeAll {
     $script:cleanupScript = Join-Path $script:scriptsDir "cleanup-mailbox.ps1"
     $script:renderScript = Join-Path $script:scriptsDir "render-prompt.ps1"
     $script:startScript = Join-Path $script:scriptsDir "start-agents.ps1"
+    $script:listModelsScript = Join-Path $script:scriptsDir "list-models.ps1"
     $script:utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
     . (Join-Path $script:scriptsDir "_common.ps1")
+    . (Join-Path $script:scriptsDir "_models.ps1")
 
     function New-FakeTarget {
         param([Parameter(Mandatory)][string]$Name)
@@ -580,12 +582,17 @@ Describe "_common.ps1 helpers" {
 
         It "derives SessionName-AgentRole when not bound and -SessionName is set" {
             Resolve-CocopilotAgentName -CurrentValue "cocopilot-agent-b" -ExplicitlyBound $false -SessionName "claim" -AgentRole "agent-b" |
-                Should -Be "claim-agent-b"
+                Should -Be "claim - agent b"
         }
 
         It "keeps the current value when not bound and -SessionName is empty" {
             Resolve-CocopilotAgentName -CurrentValue "cocopilot-agent-a" -ExplicitlyBound $false -SessionName $null -AgentRole "agent-a" |
                 Should -Be "cocopilot-agent-a"
+        }
+
+        It "trims the shared session name before deriving the two display titles" {
+            Resolve-CocopilotAgentName -CurrentValue "cocopilot-agent-a" -ExplicitlyBound $false -SessionName "  12313 polis  " -AgentRole "agent-a" |
+                Should -Be "12313 polis - agent a"
         }
     }
 
@@ -596,19 +603,264 @@ Describe "_common.ps1 helpers" {
         }
     }
 
+    Context "ConvertTo-WindowsProcessArgument" {
+        It "leaves an argument without spaces or quotes unchanged" {
+            ConvertTo-WindowsProcessArgument -Value "long_context" | Should -Be "long_context"
+        }
+
+        It "quotes spaces and escapes embedded quotes for Start-Process" {
+            ConvertTo-WindowsProcessArgument -Value 'say "hello world"' |
+                Should -Be '"say \"hello world\""'
+        }
+    }
+
     Context "Get-CocopilotWtNewTabArgs" {
-        It "builds the exact expected argument array (-w 0 global, before new-tab)" {
-            $args = Get-CocopilotWtNewTabArgs -Title "claim-agent-a" -RepoPath "C:\Repos\claim" -ShellExe "pwsh.exe" -EncodedCommand "BASE64=="
+        It "builds the expected argument array and quotes values that Start-Process flattens" {
+            $args = Get-CocopilotWtNewTabArgs `
+                -Title "claim; urgent - agent a" `
+                -RepoPath "C:\Repos\claim; urgent" `
+                -ShellExe "C:\Program Files\PowerShell\7\pwsh.exe" `
+                -EncodedCommand "BASE64=="
             $expected = @(
                 "-w", "0",
                 "new-tab",
-                "--title", "claim-agent-a",
+                "--title", '"claim\; urgent - agent a"',
                 "--suppressApplicationTitle",
-                "--startingDirectory", "C:\Repos\claim",
+                "--startingDirectory", '"C:\Repos\claim\; urgent"',
                 "--",
-                "pwsh.exe", "-NoExit", "-EncodedCommand", "BASE64=="
+                '"C:\Program Files\PowerShell\7\pwsh.exe"', "-NoExit", "-EncodedCommand", "BASE64=="
             )
             ($args -join "|") | Should -Be ($expected -join "|")
+        }
+    }
+}
+
+Describe "_models.ps1 helpers" {
+    It "resolves the official npm shim layout to its platform executable and sibling SDK" {
+        $npmRoot = Join-Path $TestDrive "npm-layout"
+        $shimPath = Join-Path $npmRoot "copilot.ps1"
+        $platformExecutable = Join-Path $npmRoot "node_modules\@github\copilot-win32-x64\copilot.exe"
+        $sdkPath = Join-Path $npmRoot "node_modules\@github\copilot\copilot-sdk\index.js"
+        foreach ($path in @($shimPath, $platformExecutable, $sdkPath)) {
+            [System.IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
+            [System.IO.File]::WriteAllText($path, "", $script:utf8NoBom)
+        }
+
+        $resolvedExecutable = Find-CocopilotNpmExecutable -ShimPath $shimPath -Architecture x64
+        $resolvedSdk = Find-CocopilotSdkPath -Version "1.0.82" -CopilotExecutable $resolvedExecutable
+
+        $resolvedExecutable | Should -Be $platformExecutable
+        $resolvedSdk | Should -Be $sdkPath
+    }
+
+    It "enumerates every model in a top-level JSON array on both PowerShell hosts" {
+        $models = @(ConvertFrom-CocopilotModelJson -Json '[{"id":"model-a"},{"id":"model-b"}]')
+
+        $models.Count | Should -Be 2
+        $models[0].id | Should -Be "model-a"
+        $models[1].id | Should -Be "model-b"
+    }
+
+    It "parses the model choices advertised by Copilot's bash completion" {
+        $completion = @'
+case "$prev" in
+  --model)
+    COMPREPLY=( $(compgen -W 'auto claude-sonnet-5 gpt-6-sol' -- "$cur") )
+    return 0
+    ;;
+esac
+'@
+        $models = @(ConvertFrom-CocopilotCompletionModels -CompletionText $completion)
+        $models | Should -Be @("auto", "claude-sonnet-5", "gpt-6-sol")
+    }
+
+    It "maps live model metadata to supported effort and context settings" {
+        $model = @'
+{
+  "id": "gpt-test",
+  "name": "GPT Test",
+  "capabilities": {
+    "limits": {
+      "max_context_window_tokens": 1000000,
+      "max_output_tokens": 64000
+    },
+    "supports": {
+      "reasoning_effort": ["low", "high"]
+    }
+  },
+  "billing": {
+    "tokenPrices": {
+      "contextMax": 200000,
+      "longContext": { "contextMax": 900000 }
+    }
+  },
+  "modelPickerCategory": "powerful",
+  "modelPickerPriceCategory": "medium"
+}
+'@ | ConvertFrom-Json
+
+        $descriptor = ConvertTo-CocopilotModelDescriptor -Model $model -Source account
+
+        $descriptor.Id | Should -Be "gpt-test"
+        $descriptor.SupportedEfforts | Should -Be @("low", "high")
+        $descriptor.ContextTiers | Should -Be @("default", "long_context")
+        $descriptor.StandardContextTokens | Should -Be 200000
+        $descriptor.LongContextTokens | Should -Be 900000
+        $descriptor.MaxOutputTokens | Should -Be 64000
+        $descriptor.HasCapabilityMetadata | Should -BeTrue
+    }
+
+    It "prefers modern maxPromptTokens fields and still detects long-context support" {
+        $model = @'
+{
+  "id": "modern-model",
+  "name": "Modern Model",
+  "capabilities": {
+    "limits": {
+      "max_context_window_tokens": 1000000,
+      "max_prompt_tokens": 180000,
+      "max_output_tokens": 64000
+    }
+  },
+  "billing": {
+    "tokenPrices": {
+      "maxPromptTokens": 200000,
+      "longContext": { "maxPromptTokens": 900000 }
+    }
+  }
+}
+'@ | ConvertFrom-Json
+
+        $descriptor = ConvertTo-CocopilotModelDescriptor -Model $model -Source account
+
+        $descriptor.StandardContextTokens | Should -Be 200000
+        $descriptor.LongContextTokens | Should -Be 900000
+        $descriptor.ContextTiers | Should -Be @("default", "long_context")
+    }
+
+    It "shows a supported long-context tier even when its optional token limit is absent" {
+        $model = @'
+{
+  "id": "tokenless-long-model",
+  "name": "Tokenless Long Model",
+  "capabilities": {
+    "limits": {
+      "max_prompt_tokens": 200000,
+      "max_context_window_tokens": 260000
+    }
+  },
+  "billing": {
+    "tokenPrices": {
+      "maxPromptTokens": 200000,
+      "longContext": {}
+    }
+  }
+}
+'@ | ConvertFrom-Json
+
+        $descriptor = ConvertTo-CocopilotModelDescriptor -Model $model -Source account
+        $row = @(Get-CocopilotModelDisplayRows -Catalog @($descriptor))[0]
+
+        $descriptor.ContextTiers | Should -Contain "long_context"
+        $row.Context | Should -Match "long_context unknown"
+    }
+
+    It "marks completion-only models as availability and capability unknown" {
+        $descriptor = ConvertTo-CocopilotModelDescriptor `
+            -Model ([pscustomobject]@{ id = "future-model"; name = "future-model" }) `
+            -Source cli-completion
+
+        $descriptor.Source | Should -Be "cli-completion"
+        $descriptor.HasCapabilityMetadata | Should -BeFalse
+        $descriptor.SupportedEfforts | Should -BeNullOrEmpty
+        $descriptor.ContextTiers | Should -BeNullOrEmpty
+    }
+
+    It "selects a model by displayed number" {
+        $catalog = @(
+            ConvertTo-CocopilotModelDescriptor -Model ([pscustomobject]@{ id = "model-a"; name = "A" }) -Source cli-completion
+            ConvertTo-CocopilotModelDescriptor -Model ([pscustomobject]@{ id = "model-b"; name = "B" }) -Source cli-completion
+        )
+        Mock Read-Host { "2" }
+
+        (Read-CocopilotModelChoice -Catalog $catalog -RoleLabel "Agent A" -DefaultModelId "model-a").Id |
+            Should -Be "model-b"
+    }
+
+    It "prompts only for settings supported by the selected live model" {
+        $model = @'
+{
+  "id": "gpt-test",
+  "name": "GPT Test",
+  "supportedReasoningEfforts": ["low", "high"],
+  "capabilities": { "limits": { "max_context_window_tokens": 900000 } },
+  "billing": {
+    "tokenPrices": {
+      "contextMax": 200000,
+      "longContext": { "contextMax": 900000 }
+    }
+  }
+}
+'@ | ConvertFrom-Json
+        $descriptor = ConvertTo-CocopilotModelDescriptor -Model $model -Source account
+        Mock Read-Host {
+            param($Prompt)
+            if ($Prompt -match "effort") { return "high" }
+            return "default"
+        }
+
+        $configuration = Resolve-CocopilotAgentModelConfiguration `
+            -Model $descriptor -RoleLabel "Agent B" -PromptForSettings
+
+        $configuration.Model | Should -Be "gpt-test"
+        $configuration.Effort | Should -Be "high"
+        $configuration.Context | Should -Be "default"
+        Should -Invoke Read-Host -Times 2 -Exactly
+    }
+
+    It "rejects an effort that the selected live model does not support" {
+        $model = @'
+{
+  "id": "gpt-test",
+  "name": "GPT Test",
+  "supportedReasoningEfforts": ["low", "high"],
+  "capabilities": { "limits": { "max_context_window_tokens": 200000 } }
+}
+'@ | ConvertFrom-Json
+        $descriptor = ConvertTo-CocopilotModelDescriptor -Model $model -Source account
+
+        {
+            Resolve-CocopilotAgentModelConfiguration `
+                -Model $descriptor -RoleLabel "Agent A" -RequestedEffort "max"
+        } | Should -Throw "*does not support effort 'max'*"
+    }
+
+    It "builds the typed Copilot argument array in launch order" {
+        $arguments = New-CocopilotAgentArguments `
+            -Model "gpt-6-sol" -Effort "max" -Context "long_context"
+
+        $arguments | Should -Be @(
+            "--model", "gpt-6-sol",
+            "--effort", "max",
+            "--context", "long_context",
+            "--autopilot",
+            "--allow-all"
+        )
+    }
+
+    It "includes the live-query failure in the advertised-catalog fallback warning" {
+        $fallback = ConvertTo-CocopilotModelDescriptor `
+            -Model ([pscustomobject]@{ id = "fallback-model"; name = "fallback-model" }) `
+            -Source cli-completion
+        Mock Invoke-CocopilotSdkModelQuery { throw "SDK unavailable for test" }
+        Mock Get-CocopilotAdvertisedModelCatalog { @($fallback) }
+        Mock Write-Warning
+
+        $catalog = @(Get-CocopilotModelCatalog)
+
+        $catalog[0].Id | Should -Be "fallback-model"
+        Should -Invoke Write-Warning -Times 1 -Exactly -ParameterFilter {
+            $Message -match "SDK unavailable for test" -and $Message -notmatch "\{0\}"
         }
     }
 }
@@ -632,22 +884,92 @@ Describe "install.ps1 + profile snippet" {
             copilot-sol "extra-argument"
         }
 
-        $arguments | Should -Be "--model|gpt-5.6-sol|--effort|max|--context|long_context|--autopilot|--allow-all|extra-argument"
+        $arguments | Should -Be "--model|gpt-6-sol|--effort|max|--context|long_context|--autopilot|--allow-all|extra-argument"
     }
 
-    It "launches agent-b with Sol maximum long-context defaults" {
-        $t = New-FakeTarget "start-default-sol"
+    It "assigns explicit model/settings independently to agent-a and agent-b" {
+        $t = New-FakeTarget "start-explicit-models"
         & $script:initScript -RepoPath $t *>$null
         Mock Start-Process
         Mock Start-Sleep
 
-        & $script:startScript -RepoPath $t -ShellExe "powershell.exe" -UseWindowsTerminal:$false *>$null
+        & $script:startScript `
+            -RepoPath $t `
+            -AgentAModel "claude-sonnet-5" `
+            -AgentAEffort "high" `
+            -AgentAContext "default" `
+            -AgentBModel "gpt-6-sol" `
+            -AgentBEffort "max" `
+            -AgentBContext "long_context" `
+            -ShellExe "powershell.exe" `
+            -UseWindowsTerminal:$false *>$null
 
         Should -Invoke Start-Process -Times 2 -Exactly
         Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
             $invocation = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[2]))
-            $invocation -match [regex]::Escape("'--model' 'gpt-5.6-sol' '--effort' 'max' '--context' 'long_context' '--autopilot' '--allow-all'")
+            $invocation -match [regex]::Escape("'--model' 'claude-sonnet-5' '--effort' 'high' '--context' 'default' '--autopilot' '--allow-all'")
         }
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+            $invocation = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[2]))
+            $invocation -match [regex]::Escape("'--model' 'gpt-6-sol' '--effort' 'max' '--context' 'long_context' '--autopilot' '--allow-all'")
+        }
+    }
+
+    It "uses the shared -Name for both Copilot session names and fixed window titles" {
+        $t = New-FakeTarget "start-shared-name"
+        & $script:initScript -RepoPath $t *>$null
+        Mock Start-Process
+        Mock Start-Sleep
+
+        & $script:startScript `
+            -RepoPath $t `
+            -Name "12313 polis" `
+            -AgentAArgs @() `
+            -AgentBArgs @() `
+            -ShellExe "powershell.exe" `
+            -UseWindowsTerminal:$false *>$null
+
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+            $invocation = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[2]))
+            $invocation -match [regex]::Escape("WindowTitle = '12313 polis - agent a'") -and
+                $invocation -match [regex]::Escape("-n '12313 polis - agent a'")
+        }
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+            $invocation = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[2]))
+            $invocation -match [regex]::Escape("WindowTitle = '12313 polis - agent b'") -and
+                $invocation -match [regex]::Escape("-n '12313 polis - agent b'")
+        }
+    }
+
+    It "rejects mixing a typed model with the expert raw argument override" {
+        $t = New-FakeTarget "start-mixed-model-input"
+        {
+            & $script:startScript -RepoPath $t -AgentAArgs @() -AgentAModel "gpt-6-sol" *>$null
+        } | Should -Throw "*-AgentAArgs cannot be combined*"
+    }
+
+    It "exposes -Name as an alias for the shared session name" {
+        (Get-Command $script:startScript).Parameters["SessionName"].Aliases | Should -Contain "Name"
+    }
+
+    It "defines the model catalog command and typed model parameters in the profile" {
+        $surface = & {
+            . $script:snippetPath
+            [pscustomobject]@{
+                HasModelsCommand = [bool](Get-Command cocopilot-models -ErrorAction SilentlyContinue)
+                StartParameters  = @((Get-Command cocopilot-start).Parameters.Keys)
+                SessionAliases   = @((Get-Command cocopilot-start).Parameters["SessionName"].Aliases)
+            }
+        }
+
+        $surface.HasModelsCommand | Should -BeTrue
+        $surface.StartParameters | Should -Contain "AgentAModel"
+        $surface.StartParameters | Should -Contain "AgentAEffort"
+        $surface.StartParameters | Should -Contain "AgentAContext"
+        $surface.StartParameters | Should -Contain "AgentBModel"
+        $surface.StartParameters | Should -Contain "AgentBEffort"
+        $surface.StartParameters | Should -Contain "AgentBContext"
+        $surface.SessionAliases | Should -Contain "Name"
     }
 
     It "writes a marker-guarded dot-source block into a fresh profile" {

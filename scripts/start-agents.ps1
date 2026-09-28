@@ -13,13 +13,20 @@
     that target repository.
 
     By default each agent is launched as a plain, literal `copilot`
-    invocation with explicit flags (see -AgentAArgs/-AgentBArgs below) —
-    not a personal PowerShell profile function/alias — so this works the
-    same for anyone with the `copilot` CLI on PATH, without requiring any
-    particular $PROFILE setup. If you do keep your own shortcut functions
-    (e.g. a `copilot-sonnet` function that already bakes in your preferred
-    flags), pass its name via -AgentACommand/-AgentBCommand and clear the
-    corresponding -Args parameter.
+    invocation — not a personal PowerShell profile function/alias — so this
+    works the same for anyone with the `copilot` CLI on PATH, without
+    requiring any particular $PROFILE setup. Assign each role with
+    -AgentAModel/-AgentBModel and optional effort/context settings. When a
+    role has neither a model nor an explicitly-bound raw -AgentAArgs/
+    -AgentBArgs array, the launcher shows the available model catalog and
+    prompts for that role's model and supported settings.
+
+    If you keep your own shortcut functions (e.g. a `copilot-opus`
+    function that already bakes in your preferred flags), pass its name via
+    -AgentACommand/-AgentBCommand and explicitly pass the corresponding
+    -AgentAArgs/-AgentBArgs @(). An explicitly-bound raw argument array is
+    the expert escape hatch: it suppresses the typed model picker for that
+    role and is passed through unchanged.
 
     Opens two new console windows in the same shell you're currently
     running this from (see -ShellExe) and runs, in the target repository:
@@ -55,25 +62,45 @@
 .PARAMETER AgentACommand
     Executable/command to run for agent-a. Defaults to "copilot" (the real
     CLI, expected on PATH). Pass a personal shortcut function name instead
-    (e.g. "copilot-sonnet") if you have one defined in your $PROFILE — in
+    (e.g. "copilot-opus") if you have one defined in your $PROFILE — in
     that case also pass -AgentAArgs @() since your function already bakes
     in its own flags.
 
 .PARAMETER AgentAArgs
-    Extra arguments appended after AgentACommand, before -C/-n/-i. Defaults
-    to a literal claude-sonnet-5 configuration:
-    --model claude-sonnet-5 --effort max --context long_context --autopilot
-    --allow-all. Pass @() if AgentACommand is your own shortcut that
-    already includes its own flags.
+    Complete expert argument array appended after AgentACommand, before
+    -C/-n/-i. When explicitly bound, this suppresses -AgentAModel,
+    -AgentAEffort, -AgentAContext, and the picker for agent-a. Pass @() if
+    AgentACommand is a shortcut that already includes its own flags.
+
+.PARAMETER AgentAModel
+    Model assigned to agent-a. If omitted (and -AgentAArgs was not
+    explicitly bound), opens the model/settings picker. The picker defaults
+    to claude-opus-5.5 when it is available.
+
+.PARAMETER AgentAEffort
+    Optional reasoning effort for agent-a. Validated against account model
+    metadata when the picker is active; otherwise passed to Copilot as-is.
+
+.PARAMETER AgentAContext
+    Optional context tier for agent-a: default or long_context. Validated
+    against account model metadata when the picker is active.
 
 .PARAMETER AgentBCommand
     Executable/command to run for agent-b. Defaults to "copilot".
 
 .PARAMETER AgentBArgs
-    Extra arguments appended after AgentBCommand, before -C/-n/-i. Defaults
-    to a literal gpt-5.6-sol configuration:
-    --model gpt-5.6-sol --effort max --context long_context --autopilot
-    --allow-all. Pass @() if AgentBCommand is your own shortcut.
+    Same expert override behavior as -AgentAArgs, for agent-b.
+
+.PARAMETER AgentBModel
+    Model assigned to agent-b. If omitted (and -AgentBArgs was not
+    explicitly bound), opens the model/settings picker. The picker defaults
+    to gpt-6-sol when it is available.
+
+.PARAMETER AgentBEffort
+    Optional reasoning effort for agent-b.
+
+.PARAMETER AgentBContext
+    Optional context tier for agent-b: default or long_context.
 
 .PARAMETER UseWindowsTerminal
     Launch via `wt.exe` new tabs instead of plain new console windows.
@@ -87,21 +114,20 @@
 
 .PARAMETER NameA
     Session name for agent-a — also becomes its console/wt-tab title.
-    Defaults to "cocopilot-agent-a", or "<SessionName>-agent-a" when
-    -SessionName is given and -NameA isn't itself explicitly passed. An
-    explicit -NameA always wins over -SessionName.
+    Defaults to "cocopilot-agent-a", or "<SessionName> - agent a" when
+    -SessionName/-Name is given and -NameA isn't itself explicitly passed.
+    An explicit -NameA always wins over -SessionName.
 
 .PARAMETER NameB
     Same as -NameA, for agent-b ("cocopilot-agent-b" /
-    "<SessionName>-agent-b").
+    "<SessionName> - agent b").
 
 .PARAMETER SessionName
     Convenience prefix applied to both -NameA and -NameB when they aren't
-    explicitly passed — e.g. -SessionName "claim" yields "claim-agent-a" /
-    "claim-agent-b", shown as both the copilot session name and the new
-    window/tab's title, so several concurrent pairings stay identifiable
-    at a glance. Has no effect on a -NameA/-NameB that's explicitly
-    supplied.
+    explicitly passed — e.g. -Name "12313 polis" (an alias for
+    -SessionName) yields "12313 polis - agent a" / "12313 polis - agent b",
+    shown as both the copilot session name and the new window/tab's title.
+    Has no effect on a -NameA/-NameB that's explicitly supplied.
 
 .PARAMETER ShellExe
     Path to the PowerShell executable used for each new window. Defaults to
@@ -117,29 +143,39 @@
 
 .EXAMPLE
     .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project
-    # works out of the box: agent-a and agent-b both via the real `copilot`
-    # CLI, claude-sonnet-5 and gpt-5.6-sol respectively, paired on that repo
+    # shows the available model catalog, then asks which model/settings to
+    # assign to agent-a and agent-b
 
 .EXAMPLE
-    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentACommand copilot-sonnet -AgentAArgs @() -AgentBCommand copilot-sol -AgentBArgs @() -UseWindowsTerminal:$false
-    # use your own PowerShell profile shortcuts instead of the literal
-    # defaults, and force plain console windows instead of wt.exe tabs
+    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentAModel claude-opus-5.5 -AgentAEffort max -AgentAContext long_context -AgentBModel gpt-6-sol -AgentBEffort max -AgentBContext long_context
+    # non-interactive role assignment with explicit model settings
 
 .EXAMPLE
-    .\scripts\start-agents.ps1 -RepoPath C:\Repos\claim -SessionName claim
-    # tabs/windows and copilot session names are "claim-agent-a" /
-    # "claim-agent-b" - handy when pairing on several repos at once
+    .\scripts\start-agents.ps1 -RepoPath C:\Repos\claim -Name "12313 polis"
+    # tabs/windows and Copilot sessions are "12313 polis - agent a" /
+    # "12313 polis - agent b"
+
+.EXAMPLE
+    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentACommand copilot-opus -AgentAArgs @() -AgentBCommand copilot-sol -AgentBArgs @() -UseWindowsTerminal:$false
+    # use profile shortcuts that supply their own flags, and force plain
+    # console windows instead of Windows Terminal tabs
 #>
 param(
     [string]$RepoPath = (Get-Location).Path,
     [string]$ContextRoot,
     [string]$AgentACommand = "copilot",
-    [string[]]$AgentAArgs = @("--model", "claude-sonnet-5", "--effort", "max", "--context", "long_context", "--autopilot", "--allow-all"),
+    [string[]]$AgentAArgs,
+    [string]$AgentAModel,
+    [ValidateSet("none", "minimal", "low", "medium", "high", "xhigh", "max")][string]$AgentAEffort,
+    [ValidateSet("default", "long_context")][string]$AgentAContext,
     [string]$AgentBCommand = "copilot",
-    [string[]]$AgentBArgs = @("--model", "gpt-5.6-sol", "--effort", "max", "--context", "long_context", "--autopilot", "--allow-all"),
+    [string[]]$AgentBArgs,
+    [string]$AgentBModel,
+    [ValidateSet("none", "minimal", "low", "medium", "high", "xhigh", "max")][string]$AgentBEffort,
+    [ValidateSet("default", "long_context")][string]$AgentBContext,
     [string]$NameA = "cocopilot-agent-a",
     [string]$NameB = "cocopilot-agent-b",
-    [string]$SessionName,
+    [Alias("Name")][string]$SessionName,
     [switch]$UseWindowsTerminal = $true,
     [string]$ShellExe = (Get-Process -Id $PID).Path
 )
@@ -147,6 +183,21 @@ param(
 $ErrorActionPreference = "Stop"
 
 . (Join-Path $PSScriptRoot "_common.ps1")
+. (Join-Path $PSScriptRoot "_models.ps1")
+
+$agentAArgsBound = $PSBoundParameters.ContainsKey("AgentAArgs")
+$agentBArgsBound = $PSBoundParameters.ContainsKey("AgentBArgs")
+$agentATypedSettings = @("AgentAModel", "AgentAEffort", "AgentAContext") |
+    Where-Object { $PSBoundParameters.ContainsKey($_) }
+$agentBTypedSettings = @("AgentBModel", "AgentBEffort", "AgentBContext") |
+    Where-Object { $PSBoundParameters.ContainsKey($_) }
+
+if ($agentAArgsBound -and @($agentATypedSettings).Count -gt 0) {
+    throw "-AgentAArgs cannot be combined with -AgentAModel, -AgentAEffort, or -AgentAContext."
+}
+if ($agentBArgsBound -and @($agentBTypedSettings).Count -gt 0) {
+    throw "-AgentBArgs cannot be combined with -AgentBModel, -AgentBEffort, or -AgentBContext."
+}
 
 $NameA = Resolve-CocopilotAgentName -CurrentValue $NameA -ExplicitlyBound $PSBoundParameters.ContainsKey('NameA') -SessionName $SessionName -AgentRole "agent-a"
 $NameB = Resolve-CocopilotAgentName -CurrentValue $NameB -ExplicitlyBound $PSBoundParameters.ContainsKey('NameB') -SessionName $SessionName -AgentRole "agent-b"
@@ -176,6 +227,71 @@ if (@($mailboxFiles | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -
 }
 foreach ($p in @($promptA, $promptB)) {
     if (-not (Test-Path -LiteralPath $p)) { throw "Missing prompt file: $p" }
+}
+
+$catalog = @()
+$agentAModelDescriptor = $null
+$agentBModelDescriptor = $null
+$promptForAgentASettings = $false
+$promptForAgentBSettings = $false
+$needsAgentASelection = -not $agentAArgsBound -and [string]::IsNullOrWhiteSpace($AgentAModel)
+$needsAgentBSelection = -not $agentBArgsBound -and [string]::IsNullOrWhiteSpace($AgentBModel)
+
+if ($needsAgentASelection -or $needsAgentBSelection) {
+    $catalog = @(Get-CocopilotModelCatalog)
+    Show-CocopilotModelCatalog -Catalog $catalog
+}
+if ($needsAgentASelection) {
+    $agentAModelDescriptor = Read-CocopilotModelChoice -Catalog $catalog -RoleLabel "Agent A" -DefaultModelId "claude-opus-5.5"
+    $AgentAModel = $agentAModelDescriptor.Id
+    $promptForAgentASettings = $true
+}
+if ($needsAgentBSelection) {
+    $agentBModelDescriptor = Read-CocopilotModelChoice -Catalog $catalog -RoleLabel "Agent B" -DefaultModelId "gpt-6-sol"
+    $AgentBModel = $agentBModelDescriptor.Id
+    $promptForAgentBSettings = $true
+}
+
+if (-not $agentAArgsBound) {
+    if (-not $agentAModelDescriptor) {
+        $agentAModelDescriptor = $catalog | Where-Object { $_.Id -ieq $AgentAModel } | Select-Object -First 1
+    }
+    if (-not $agentAModelDescriptor) {
+        $agentAModelDescriptor = ConvertTo-CocopilotModelDescriptor `
+            -Model ([pscustomobject]@{ id = $AgentAModel; name = $AgentAModel }) `
+            -Source cli-completion
+    }
+    $agentAConfiguration = Resolve-CocopilotAgentModelConfiguration `
+        -Model $agentAModelDescriptor `
+        -RoleLabel "Agent A" `
+        -RequestedEffort $AgentAEffort `
+        -RequestedContext $AgentAContext `
+        -PromptForSettings:$promptForAgentASettings
+    $AgentAArgs = @(New-CocopilotAgentArguments `
+        -Model $agentAConfiguration.Model `
+        -Effort $agentAConfiguration.Effort `
+        -Context $agentAConfiguration.Context)
+}
+
+if (-not $agentBArgsBound) {
+    if (-not $agentBModelDescriptor) {
+        $agentBModelDescriptor = $catalog | Where-Object { $_.Id -ieq $AgentBModel } | Select-Object -First 1
+    }
+    if (-not $agentBModelDescriptor) {
+        $agentBModelDescriptor = ConvertTo-CocopilotModelDescriptor `
+            -Model ([pscustomobject]@{ id = $AgentBModel; name = $AgentBModel }) `
+            -Source cli-completion
+    }
+    $agentBConfiguration = Resolve-CocopilotAgentModelConfiguration `
+        -Model $agentBModelDescriptor `
+        -RoleLabel "Agent B" `
+        -RequestedEffort $AgentBEffort `
+        -RequestedContext $AgentBContext `
+        -PromptForSettings:$promptForAgentBSettings
+    $AgentBArgs = @(New-CocopilotAgentArguments `
+        -Model $agentBConfiguration.Model `
+        -Effort $agentBConfiguration.Effort `
+        -Context $agentBConfiguration.Context)
 }
 
 function Start-CopilotAgent {
@@ -239,6 +355,24 @@ if (-not (Get-Command $AgentACommand -ErrorAction SilentlyContinue)) {
 if (-not (Get-Command $AgentBCommand -ErrorAction SilentlyContinue)) {
     Write-Warning "'$AgentBCommand' isn't a recognized command in this session; make sure it's on PATH (or defined in your `$PROFILE if you passed a personal shortcut)."
 }
+
+$agentAModelDisplay = Get-CocopilotArgumentValue -Arguments $AgentAArgs -Name "--model"
+$agentBModelDisplay = Get-CocopilotArgumentValue -Arguments $AgentBArgs -Name "--model"
+$agentAEffortDisplay = Get-CocopilotArgumentValue -Arguments $AgentAArgs -Name "--effort"
+$agentBEffortDisplay = Get-CocopilotArgumentValue -Arguments $AgentBArgs -Name "--effort"
+$agentAContextDisplay = Get-CocopilotArgumentValue -Arguments $AgentAArgs -Name "--context"
+$agentBContextDisplay = Get-CocopilotArgumentValue -Arguments $AgentBArgs -Name "--context"
+
+Write-Host ("Agent A -> '{0}' | command: {1} | model: {2} | effort: {3} | context: {4}" -f
+    $NameA, $AgentACommand,
+    $(if ($agentAModelDisplay) { $agentAModelDisplay } else { "command default" }),
+    $(if ($agentAEffortDisplay) { $agentAEffortDisplay } else { "model default" }),
+    $(if ($agentAContextDisplay) { $agentAContextDisplay } else { "model default" })) -ForegroundColor Cyan
+Write-Host ("Agent B -> '{0}' | command: {1} | model: {2} | effort: {3} | context: {4}" -f
+    $NameB, $AgentBCommand,
+    $(if ($agentBModelDisplay) { $agentBModelDisplay } else { "command default" }),
+    $(if ($agentBEffortDisplay) { $agentBEffortDisplay } else { "model default" }),
+    $(if ($agentBContextDisplay) { $agentBContextDisplay } else { "model default" })) -ForegroundColor Cyan
 
 Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentACommand -AgentArgs $AgentAArgs -Name $NameA -PromptPath $promptA -AgentRole "agent-a" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal
 Start-Sleep -Seconds 1

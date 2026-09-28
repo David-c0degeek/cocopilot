@@ -35,28 +35,37 @@ The installer updates the clone (`git pull --ff-only`) and adds a tiny marker-gu
 
 | Function | Does |
 |---|---|
-| `cocopilot-start [-RepoPath] [-ContextRoot] [-SessionName] [-AllowNonGit] [-UseWindowsTerminal]` | Inits mailbox if missing, opens both agent windows paired on the repo. Defaults to current dir. |
+| `cocopilot-start [-RepoPath] [-Name] [-AgentAModel] [-AgentBModel] […]` | Inits the mailbox, lets you assign a model/settings to each role when omitted, and opens both named agent tabs. Defaults to the current directory. |
+| `cocopilot-models [-Raw] [-NoFallback]` | Shows the models available to your Copilot account plus supported effort/context settings and token limits. |
 | `cocopilot-prompt -Agent a\|b\|verifier [-RepoPath] [-ContextRoot] [-AllowNonGit]` | Copies that role's paste-ready (re)start prompt to the clipboard — for crashed windows, manual role adds, or a fresh verifier session. |
 | `cocopilot-cleanup [-RepoPath] [-Recurse] [-WhatIf]` | Removes `.mailbox\` + its `.gitignore` rule when you're done. `-Recurse` cleans every paired repo under `-RepoPath`. |
 | `cocopilot-update` | `git pull` + re-register (reruns the installer). |
-| `copilot-sonnet` / `copilot-sol` / `copilot-terra` | Plain `copilot` launchers with cocopilot's default model/flags. |
+| `copilot-opus` / `copilot-sol` / `copilot-terra` | Plain `copilot` launchers with cocopilot's default model/flags. |
 
 ## Quick start
 
-Three commands. Requirements: Windows PowerShell 5.1 or pwsh 7, Git, and the `copilot` CLI on PATH.
+Requirements: Windows PowerShell 5.1 or pwsh 7, Git, and the `copilot` CLI on PATH.
 
 ```powershell
-# 1. Initialize the mailbox inside the repo you want to pair on
-C:\Repos\cocopilot\scripts\init-mailbox.ps1 -RepoPath C:\Repos\your-project
+# Starts from the current repo, creates its mailbox if needed, and opens the
+# model picker for Agent A and Agent B.
+cd C:\Repos\your-project
+cocopilot-start -Name "12313 polis"
 
-# 2. Launch both agents (two terminal windows, paired on that repo)
-C:\Repos\cocopilot\scripts\start-agents.ps1 -RepoPath C:\Repos\your-project
+# When finished:
+cocopilot-cleanup
 
-# 3. When you're done — remove cocopilot's mailbox footprint (not the agents' project changes)
-C:\Repos\cocopilot\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos\your-project
+# Or skip the picker with explicit role assignments:
+cocopilot-start -Name "12313 polis" `
+    -AgentAModel claude-opus-5.5 -AgentAEffort max -AgentAContext long_context `
+    -AgentBModel gpt-6-sol      -AgentBEffort max -AgentBContext long_context
 ```
 
-That's it. Agent A starts as the driver on `claude-sonnet-5`, Agent B navigates on `gpt-5.6-sol` with maximum effort and long context (both overridable), and they coordinate through `.mailbox/` inside your target repo — git-ignored automatically, removed completely by cleanup.
+The two tabs and Copilot sessions are named **`12313 polis - agent a`** and **`12313 polis - agent b`**.
+Agent A still starts as the driver and Agent B as the navigator. The picker only decides which model and settings get
+each fixed lane identity. Pressing Enter through the picker keeps the suggested pairing when those models are available:
+`claude-opus-5.5` for Agent A and `gpt-6-sol` for Agent B. Each model uses its strongest supported effort and long
+context where available.
 
 > `-RepoPath` defaults to the current directory, so you can also just `cd` into the target project first.
 
@@ -125,7 +134,7 @@ Every prompt is generic — a **session-context banner** (generated per run) inj
 
 ## Command reference
 
-All six user-facing commands live in [`scripts/`](scripts), take `-RepoPath` (default: current directory, except `write-lane.ps1` which requires it explicitly), and run on **Windows PowerShell 5.1 and pwsh 7**. (`_common.ps1` is an internal helper, not a command.)
+All user-facing scripts live in [`scripts/`](scripts) and run on **Windows PowerShell 5.1 and pwsh 7**. Repository-oriented commands take `-RepoPath` (default: current directory, except `write-lane.ps1`, which requires it explicitly); `list-models.ps1` is account-oriented and needs no repository. Files prefixed with `_` are internal helpers, not commands.
 
 ### `init-mailbox.ps1` — set up a target repo
 
@@ -145,32 +154,52 @@ Creates the ownership record and both per-agent lane scratchpads from the two tr
 
 Safe to re-run: existing files are left alone without `-Force`.
 
+### `list-models.ps1` — inspect available models and settings
+
+```powershell
+# Installed profile command
+cocopilot-models
+
+# Direct script equivalent
+.\scripts\list-models.ps1
+```
+
+Shows the current account's enabled models with supported reasoning effort levels, `default`/`long_context` token limits, maximum output size, capability category, and price category. The launcher uses this same catalog for its numbered Agent A/Agent B picker, so unsupported effort/context combinations are rejected before tabs are opened.
+
+Account-aware discovery uses the SDK bundled with the installed Copilot CLI when Node.js is on PATH. If that optional path is unavailable, the command warns and falls back to model IDs advertised by `copilot completion bash`; account availability and per-model settings are then shown as `unknown`, and Copilot itself remains the final validator. `-NoFallback` makes exact account discovery mandatory, while `-Raw` returns reusable descriptor objects instead of a table. Node.js is not required when models are supplied explicitly and is not required to launch the agents.
+
 ### `start-agents.ps1` — launch the pair
 
 ```powershell
+# interactive model/settings assignment for both roles
 .\scripts\start-agents.ps1 -RepoPath C:\Repos\your-project
 
-# custom models / flags
+# explicit role assignment (no picker)
 .\scripts\start-agents.ps1 -RepoPath C:\Repos\your-project `
-    -AgentAArgs @("--model","gpt-5.4") `
-    -AgentBArgs @("--model","claude-sonnet-5")
+    -Name "12313 polis" `
+    -AgentAModel gpt-5.4         -AgentAEffort xhigh -AgentAContext long_context `
+    -AgentBModel claude-opus-5.5 -AgentBEffort max   -AgentBContext long_context
 
-# use your own $PROFILE shortcut functions instead
+# expert escape hatch: profile functions supply every model/setting flag
 .\scripts\start-agents.ps1 -RepoPath C:\Repos\your-project `
-    -AgentACommand copilot-sonnet -AgentAArgs @() `
+    -AgentACommand copilot-opus -AgentAArgs @() `
     -AgentBCommand copilot-sol  -AgentBArgs @()
 ```
 
-By default, opens two terminal windows, each running a literal `copilot` invocation (no profile magic required) with role prompt + banner injected via `-i`, working directory set to the target repo, and read access back to the cocopilot install via `--add-dir`. Whenever `wt.exe` (Windows Terminal) is on PATH, both agents open as tabs in the most-recently-used wt.exe window — typically the very window you ran this from — instead of separate OS windows; pass `-UseWindowsTerminal:$false` to force plain console windows regardless.
+When a role has no `-Agent*Model` and no explicitly-bound raw `-Agent*Args`, the launcher shows the shared model catalog once, then asks for that role's model and only the settings that model supports. A supplied model skips the picker for that role; omitted effort/context values then use the Copilot CLI's model defaults. The selected mapping is printed before launch, making it explicit which model is Agent A and which is Agent B.
+
+Each tab runs a literal `copilot` invocation (no profile magic required) with role prompt + banner injected via `-i`, working directory set to the target repo, and read access back to the cocopilot install via `--add-dir`. Whenever `wt.exe` (Windows Terminal) is on PATH, both agents open as tabs in the most-recently-used wt.exe window — typically the very window you ran this from — instead of separate OS windows; pass `-UseWindowsTerminal:$false` to force plain console windows regardless.
 
 | Parameter | Default | Meaning |
 |---|---|---|
 | `-ContextRoot` | (none) | Workspace folder (e.g. a parent dir of many repos) granted as a **read-only search scope** via an extra `--add-dir` + banner note — cross-repo context without widening ownership or writes |
 | `-AgentACommand` / `-AgentBCommand` | `copilot` | Executable or profile function per agent |
-| `-AgentAArgs` | `@("--model","claude-sonnet-5","--effort","max","--context","long_context","--autopilot","--allow-all")` | Complete argument array before `-C/-n/-i`; supplying it **replaces** the entire default. Pass `@()` when a profile function supplies its own flags |
-| `-AgentBArgs` | `@("--model","gpt-5.6-sol","--effort","max","--context","long_context","--autopilot","--allow-all")` | Same rules as `-AgentAArgs` |
+| `-AgentAModel` / `-AgentBModel` | picker (`claude-opus-5.5` / `gpt-6-sol` suggested) | Model assigned to that fixed lane identity. Supplying one skips that role's model picker |
+| `-AgentAEffort` / `-AgentBEffort` | picker: strongest supported; explicit model: CLI default | `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`; the account-aware picker offers only levels supported by the selected model |
+| `-AgentAContext` / `-AgentBContext` | picker: `long_context` when supported; explicit model: CLI default | `default` · `long_context`; account-aware selection rejects a tier the model does not support |
+| `-AgentAArgs` / `-AgentBArgs` | not bound | Expert complete argument array before `-C/-n/-i`. Explicitly binding it suppresses all typed model settings and the picker for that role; pass `@()` when a profile function supplies its own flags |
 | `-NameA` / `-NameB` | `cocopilot-agent-a/b` | Session names, and each new window/tab's title. An explicit value always wins; otherwise derived from `-SessionName` |
-| `-SessionName` | (none) | Convenience prefix for both `-NameA`/`-NameB` at once — e.g. `-SessionName claim` yields `claim-agent-a` / `claim-agent-b` — so several concurrent pairings stay identifiable by window/tab title at a glance |
+| `-SessionName` / `-Name` | (none) | Shared name for both tabs and Copilot sessions — e.g. `-Name "12313 polis"` yields `12313 polis - agent a` / `12313 polis - agent b` |
 | `-UseWindowsTerminal` | `$true` | `wt.exe` tabs whenever available (silently falls back to plain console windows otherwise — a no-op default for anyone without Windows Terminal); pass `-UseWindowsTerminal:$false` to force plain windows even when `wt.exe` is installed |
 | `-ShellExe` | current host | Shell for the new windows (pwsh vs powershell matters for `$PROFILE`); `powershell_ise.exe` auto-falls back to `powershell.exe` |
 
@@ -259,7 +288,7 @@ assets/
   cocopilot.png               the logo
 profile/
   cocopilot.profile.ps1       the functions install.ps1 dot-sources into
-                               your profile (cocopilot-start/-prompt/…)
+                               your profile (cocopilot-start/-models/…)
 .mailbox/
   implementer.example.json    tracked template — ownership record
   lane.example.md             tracked template — per-agent lane scratchpad
@@ -269,21 +298,23 @@ prompts/
 scripts/
   _common.ps1                 banner builder + Write-MailboxJson (whole-file
                                JSON writer, temp + rename)
+  _models.ps1                 account model discovery, picker, argument helpers
   init-mailbox.ps1            create <RepoPath>/.mailbox/*
+  list-models.ps1             show available models + supported settings
   start-agents.ps1            launch both copilot windows
   watch-mailbox.ps1           block until the peer writes
   write-lane.ps1              post one lane entry (log first, lane last)
   render-prompt.ps1           print a role prompt for manual paste
   cleanup-mailbox.ps1         remove cocopilot's footprint from a target
 tests/
-  Cocopilot.Tests.ps1         Pester 5 suite (53 tests, both hosts)
+  Cocopilot.Tests.ps1         Pester 5 suite (72 tests, both hosts)
 ```
 
 The real `.mailbox/` state is created **inside each target repo** (git-ignored there); cocopilot's own repo only tracks the two `*.example.*` templates.
 
 ## Tests
 
-53 black-box Pester 5 tests cover init (creation, idempotency, `-Force` log preservation, the non-git refusal + `-AllowNonGit` fallback with its distinct `non-git-root` sentinel vs. a real git-repo-no-commits zero SHA, refusing cocopilot's own installed repo), the watcher (child-process wake/no-wake, including `-Role` peer-lane filtering: peer's lane wakes it, its own lane doesn't), `write-lane.ps1` (both roles' own-lane-only writes with the peer lane untouched, exactly one correctly-headed log entry at the exact tail with prior content preserved, `-Turn`'s content preserved exactly whether or not it already ends in a newline — never a doubled newline in either the lane or the log, BOM-less UTF-8, an invalid `-Role` rejected before any file is touched), cleanup (exact block removal, CRLF + LF, refusing cocopilot's own installed repo), recursive cleanup (root + nested targets, `.git`/`node_modules` exclusion, the reparse-point cycle/escape/linked-`.mailbox` guard, excluding cocopilot's own installed repo from discovery, `-WhatIf` preserving every discovered target, per-target failure continuation with a throw only after every attempt completes), all three prompt renders (with and without `-ContextRoot`, the banner's init command including/omitting `-AllowNonGit` to match the target, and the agent-only `Lane write command` excluded from the verifier banner), the `_common.ps1` helpers backing the workspace-root/session-name/Windows-Terminal-tab features (`Get-CocopilotInitCommand`, `Resolve-CocopilotAgentName`, `Get-CocopilotWindowTitleStatement`, `Get-CocopilotWtNewTabArgs`), the installer (fresh + idempotent profile registration, snippet parse), and whole-file JSON replacement with temp-file cleanup.
+72 black-box Pester 5 tests cover init, watcher wake/no-wake behavior, own-lane writes and append-only logging, safe cleanup (single and recursive), all prompt renders, non-git workspace recovery, session-name/window-title helpers, Windows Terminal command-line quoting, npm-installed Copilot resolution, cross-host model catalog parsing and capability mapping, numbered model selection, supported effort/context validation, independent Agent A/Agent B argument generation, the profile/installer command surface, and whole-file JSON replacement with temp-file cleanup.
 
 **Prerequisite:** Pester 5 side-by-side per host — Windows PowerShell 5.1 ships inbox Pester 3.4 only:
 
@@ -304,7 +335,7 @@ pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pest
 
 **Does this need my repo to be on GitHub?** No. Any local Git repository works; cocopilot's scripts never require or access a Git remote. (The Copilot CLI itself talks to its own service, as always.)
 
-**Can I pair on several repos at once?** Yes — mailboxes are per-`-RepoPath`. Give each launch a distinct `-SessionName` (or `-NameA`/`-NameB` directly) so window/tab titles and session names don't collide.
+**Can I pair on several repos at once?** Yes — mailboxes are per-`-RepoPath`. Give each launch a distinct `-Name`/`-SessionName` (or `-NameA`/`-NameB` directly) so window/tab titles and session names don't collide.
 
 **Can I point one pair directly at a whole workspace of repos (`C:\Repos`) instead of one child repo?** Yes — pass `-AllowNonGit` to `init-mailbox.ps1` (or `cocopilot-start`) to pair directly on a workspace root that isn't itself a git repository, so a single pair can cover a work unit spanning several child repos at once. Ownership then anchors to `dirty_manifest` instead of git HEAD/status: `head` reads the fixed sentinel `non-git-root`, and a `HANDOFF_OFFER` must enumerate every touched git worktree (its own path, HEAD, and status) plus every changed non-repo file (path + a content hash) — see `COLLABORATION.md` "Ownership handoff" → "Non-git workspace roots" for the exact format. If you only need read-only cross-repo context while writing to just ONE child repo — or the work is genuinely independent per repo rather than one coordinated unit — `-ContextRoot` is the lighter-weight alternative: pair on that one repo (`cocopilot-start -RepoPath C:\Repos\claim -ContextRoot C:\Repos`) and both agents can still search every sibling repo for context, while ownership, diffs, and writes stay anchored to the one target; reserve one-pair-per-repo for genuinely independent work units, each with the same `-ContextRoot`.
 

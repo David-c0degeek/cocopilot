@@ -5,9 +5,9 @@
 
 $script:CocopilotRoot = Split-Path -Parent $PSScriptRoot
 
-function copilot-sonnet {
-    # Plain copilot CLI pinned to claude-sonnet-5 with cocopilot's default flags.
-    copilot --model claude-sonnet-5 --effort max --context long_context --autopilot --allow-all @args
+function copilot-opus {
+    # Plain copilot CLI pinned to claude-opus-5.5 with cocopilot's default flags.
+    copilot --model claude-opus-5.5 --effort max --context long_context --autopilot --allow-all @args
 }
 
 function copilot-terra {
@@ -16,8 +16,8 @@ function copilot-terra {
 }
 
 function copilot-sol {
-    # Plain copilot CLI pinned to gpt-5.6-sol with cocopilot's default flags.
-    copilot --model gpt-5.6-sol --effort max --context long_context --autopilot --allow-all @args
+    # Plain copilot CLI pinned to gpt-6-sol with cocopilot's default flags.
+    copilot --model gpt-6-sol --effort max --context long_context --autopilot --allow-all @args
 }
 
 function Initialize-CocopilotMailboxIfMissing {
@@ -37,21 +37,40 @@ function cocopilot-start {
     # Inits the mailbox if missing, then opens both agent windows paired on
     # $RepoPath. -ContextRoot grants a read-only search scope across a
     # workspace of sibling repos (see COLLABORATION.md "Workspace context").
-    # -AllowNonGit pairs directly on a workspace root that isn't itself a
-    # git repo (see init-mailbox.ps1 -AllowNonGit). -SessionName names both
-    # agent windows/tabs "<SessionName>-agent-a/b" (see start-agents.ps1
-    # -SessionName).
+    # -AllowNonGit pairs directly on a workspace root that isn't itself a git
+    # repo (see init-mailbox.ps1 -AllowNonGit). -Name/-SessionName names both
+    # agent windows/tabs "<name> - agent a/b". Assign models/settings with
+    # the typed AgentA*/AgentB* parameters; omitted models open the picker.
     param(
         [string]$RepoPath = (Get-Location).Path,
         [string]$ContextRoot,
-        [string]$SessionName,
+        [Alias("Name")][string]$SessionName,
+        [string]$NameA,
+        [string]$NameB,
+        [string]$AgentACommand,
+        [string[]]$AgentAArgs,
+        [string]$AgentAModel,
+        [ValidateSet("none", "minimal", "low", "medium", "high", "xhigh", "max")][string]$AgentAEffort,
+        [ValidateSet("default", "long_context")][string]$AgentAContext,
+        [string]$AgentBCommand,
+        [string[]]$AgentBArgs,
+        [string]$AgentBModel,
+        [ValidateSet("none", "minimal", "low", "medium", "high", "xhigh", "max")][string]$AgentBEffort,
+        [ValidateSet("default", "long_context")][string]$AgentBContext,
         [switch]$AllowNonGit,
         [switch]$UseWindowsTerminal
     )
     Initialize-CocopilotMailboxIfMissing -RepoPath $RepoPath -AllowNonGit:$AllowNonGit
     $extra = @{}
-    if ($ContextRoot) { $extra.ContextRoot = $ContextRoot }
-    if ($SessionName) { $extra.SessionName = $SessionName }
+    foreach ($parameterName in @(
+        "ContextRoot", "SessionName", "NameA", "NameB",
+        "AgentACommand", "AgentAArgs", "AgentAModel", "AgentAEffort", "AgentAContext",
+        "AgentBCommand", "AgentBArgs", "AgentBModel", "AgentBEffort", "AgentBContext"
+    )) {
+        if ($PSBoundParameters.ContainsKey($parameterName)) {
+            $extra[$parameterName] = $PSBoundParameters[$parameterName]
+        }
+    }
     # ContainsKey (not truthiness): start-agents.ps1's own -UseWindowsTerminal
     # now defaults to $true, so an explicit :$false must still be forwarded -
     # `if ($UseWindowsTerminal)` would silently swallow it.
@@ -59,10 +78,21 @@ function cocopilot-start {
     & (Join-Path $script:CocopilotRoot "scripts\start-agents.ps1") -RepoPath $RepoPath @extra
 }
 
+function cocopilot-models {
+    # Shows models available to the current Copilot account plus each model's
+    # supported effort/context settings. -Raw returns reusable descriptor
+    # objects; -NoFallback requires exact account-aware discovery.
+    param(
+        [switch]$Raw,
+        [switch]$NoFallback
+    )
+    & (Join-Path $script:CocopilotRoot "scripts\list-models.ps1") @PSBoundParameters
+}
+
 function cocopilot-prompt {
     # Copies the paste-ready (re)start prompt for one role to the clipboard —
     # session-context banner + role instructions, fully resolved to
-    # $RepoPath. Paste into a fresh copilot-sonnet/copilot-sol window if
+    # $RepoPath. Paste into a fresh copilot-opus/copilot-sol window if
     # one crashes or you add a role manually; "verifier" renders the
     # read-only fresh-eyes role for a brand-new session. -AllowNonGit pairs
     # directly on a workspace root that isn't itself a git repo (see
