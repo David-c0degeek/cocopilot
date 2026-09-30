@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.4
 <#
 .SYNOPSIS
     Launches two GitHub Copilot CLI instances in separate terminal windows,
@@ -130,16 +130,13 @@
     Has no effect on a -NameA/-NameB that's explicitly supplied.
 
 .PARAMETER ShellExe
-    Path to the PowerShell executable used for each new window. Defaults to
-    whatever host is currently running this script (via the running
-    process's own path), so if you invoke start-agents.ps1 from pwsh, the
-    new windows are pwsh too — not Windows PowerShell 5.1's powershell.exe,
-    which has a separate $PROFILE and would not define any shortcut
-    functions you rely on via -AgentACommand/-AgentBCommand. Override this
-    if you deliberately want a different shell. If this resolves to
-    PowerShell ISE (powershell_ise.exe), it's automatically swapped for
-    powershell.exe instead, since ISE isn't a console host and can't run
-    the -NoExit/-EncodedCommand invocation this script needs.
+    Path to the pwsh executable used for each new window. Defaults to the
+    pwsh host that is running this script (via the running process's own
+    path), so the new windows load the same $PROFILE and any shortcut
+    functions you rely on via -AgentACommand/-AgentBCommand. cocopilot
+    requires PowerShell 7.4 or later: Windows PowerShell (powershell.exe)
+    and PowerShell ISE (powershell_ise.exe) are rejected up front, and each
+    new window re-checks its own version before it starts copilot.
 
 .EXAMPLE
     .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project
@@ -202,14 +199,8 @@ if ($agentBArgsBound -and @($agentBTypedSettings).Count -gt 0) {
 $NameA = Resolve-CocopilotAgentName -CurrentValue $NameA -ExplicitlyBound $PSBoundParameters.ContainsKey('NameA') -SessionName $SessionName -AgentRole "agent-a"
 $NameB = Resolve-CocopilotAgentName -CurrentValue $NameB -ExplicitlyBound $PSBoundParameters.ContainsKey('NameB') -SessionName $SessionName -AgentRole "agent-b"
 
-if ((Split-Path -Leaf $ShellExe) -ieq "powershell_ise.exe") {
-    # ISE can't be launched with the -NoExit/-EncodedCommand console
-    # arguments this script relies on (it isn't a console host), so
-    # $ShellExe auto-detecting ISE would otherwise silently fail to spawn
-    # working agent windows. Fall back to the real console host instead of
-    # leaving this broken.
-    Write-Warning "ShellExe resolved to PowerShell ISE ('$ShellExe'), which can't host the console arguments this script needs. Falling back to powershell.exe."
-    $ShellExe = "powershell.exe"
+if ((Split-Path -Leaf $ShellExe) -match '^powershell(_ise)?(\.exe)?$') {
+    throw "cocopilot requires PowerShell 7.4 or later (pwsh), but -ShellExe '$ShellExe' is Windows PowerShell. Omit -ShellExe or pass a pwsh path."
 }
 
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
@@ -326,16 +317,26 @@ function Start-CopilotAgent {
     $contextDirArg = if ($ContextRoot) { "--add-dir $(ConvertTo-SingleQuoted $ContextRoot) " } else { "" }
     $copilotInvocation = ("& $agentCommandQ " + $(if ($agentArgsQ) { "$agentArgsQ " } else { "" }) + "-C $repoQ -n $nameQ --add-dir $addDirQ $contextDirArg-i $promptQ").Trim()
 
+    # Runs first in the new window: an explicit -ShellExe that points at an
+    # older pwsh must fail before anything else happens.
+    $hostGuard = "if (`$PSVersionTable.PSVersion -lt [version]'7.4') { throw 'cocopilot requires PowerShell 7.4 or later (pwsh).' }; "
+    # The new window loads the user's $PROFILE, which may switch native
+    # argument passing to Legacy. Legacy does not escape the prompt's
+    # embedded double quotes, so copilot would receive the prompt split into
+    # many arguments. Windows mode escapes them for native executables such
+    # as copilot.exe (it keeps Legacy only for .cmd/.bat-style targets).
+    $argumentPassing = "`$PSNativeCommandArgumentPassing = 'Windows'; "
     # Sets the new console's own window title - the only thing that gives
     # the plain (non-Windows-Terminal) console-window path any title at
     # all; harmless alongside wt.exe's own --title/--suppressApplicationTitle
     # below (that pair keeps the wt tab's title fixed regardless of
     # whatever this in-process statement does).
-    $innerScript = (Get-CocopilotWindowTitleStatement -Title $Name) + $copilotInvocation
+    $innerScript = $hostGuard + $argumentPassing + (Get-CocopilotWindowTitleStatement -Title $Name) + $copilotInvocation
 
-    # -EncodedCommand avoids all nested-quoting problems (works regardless
-    # of spaces/quotes in RepoPath or the prompt text) and still loads
-    # $ShellExe's own $PROFILE, so a personal shortcut function passed via
+    # -EncodedCommand avoids nested PowerShell quoting problems (spaces or
+    # quotes in RepoPath or the prompt text); the argument-passing pin above
+    # covers the native copilot boundary. It still loads $ShellExe's own
+    # $PROFILE, so a personal shortcut function passed via
     # -AgentACommand/-AgentBCommand is available in the new window.
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerScript))
 

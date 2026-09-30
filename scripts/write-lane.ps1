@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.4
 <#
 .SYNOPSIS
     Writes one mailbox lane entry: appends it to the write-once session
@@ -45,8 +45,8 @@
     as a thrown error — it is never silently reported as success, and
     step 1 is never repeated once it has already succeeded.
 
-    Both writes use UTF-8 without a BOM via .NET, so Windows PowerShell
-    5.1 and pwsh 7 produce byte-identical output.
+    Both writes use UTF-8 without a BOM via .NET, independent of cmdlet
+    encoding defaults.
 
 .PARAMETER RepoPath
     The repository being paired on (its .mailbox/ holds the log + lanes).

@@ -38,10 +38,10 @@ irm https://raw.githubusercontent.com/David-c0degeek/cocopilot/main/install.ps1 
 git clone https://github.com/David-c0degeek/cocopilot D:\repos\cocopilot; & D:\repos\cocopilot\install.ps1
 ```
 
-The installer updates the clone (`git pull --ff-only`) and adds a tiny marker-guarded block to your PowerShell profile
-that dot-sources [`profile/cocopilot.profile.ps1`](profile/cocopilot.profile.ps1) — rerunning is idempotent, and future
-updates need no profile edits. Run it once per PowerShell edition you use (pwsh and Windows PowerShell keep separate
-profiles). You get:
+The installer updates the clone (`git pull --ff-only`) and adds a tiny marker-guarded block to your pwsh profile that
+dot-sources [`profile/cocopilot.profile.ps1`](profile/cocopilot.profile.ps1) — rerunning is idempotent, and future
+updates need no profile edits. Run it from pwsh 7.4 or later. It refuses Windows PowerShell. If an earlier version
+registered cocopilot in your Windows PowerShell profile, delete that `# >>> cocopilot >>>` block by hand. You get:
 
 | Function                                                                           | Does                                                                                                                                               |
 | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -54,7 +54,8 @@ profiles). You get:
 
 ## Quick start
 
-Requirements: Windows PowerShell 5.1 or pwsh 7, Git, and the `copilot` CLI on PATH.
+Requirements: PowerShell 7.4 or later (`pwsh`), Git, and the `copilot` CLI on PATH. Windows PowerShell 5.1 is not
+supported. Use a currently supported PowerShell release: 7.4 LTS support ends on 10 November 2026.
 
 ```powershell
 # Starts from the current repo, creates its mailbox if needed, and opens the
@@ -155,7 +156,7 @@ banner gets only paths — a read-only role is deliberately never handed a mutat
 
 ## Command reference
 
-All user-facing scripts live in [`scripts/`](scripts) and run on **Windows PowerShell 5.1 and pwsh 7**.
+All user-facing scripts live in [`scripts/`](scripts) and require **PowerShell 7.4 or later** (`pwsh`).
 Repository-oriented commands take `-RepoPath` (default: current directory, except `write-lane.ps1`, which requires it
 explicitly); `list-models.ps1` is account-oriented and needs no repository. Files prefixed with `_` are internal
 helpers, not commands.
@@ -243,7 +244,7 @@ windows regardless.
 | `-NameA` / `-NameB`                 | `cocopilot-agent-a/b`                                              | Session names, and each new window/tab's title. An explicit value always wins; otherwise derived from `-SessionName`                                                                                                                      |
 | `-SessionName` / `-Name`            | (none)                                                             | Shared name for both tabs and Copilot sessions — e.g. `-Name "12313 polis"` yields `12313 polis - agent a` / `12313 polis - agent b`                                                                                                      |
 | `-UseWindowsTerminal`               | `$true`                                                            | `wt.exe` tabs whenever available (silently falls back to plain console windows otherwise — a no-op default for anyone without Windows Terminal); pass `-UseWindowsTerminal:$false` to force plain windows even when `wt.exe` is installed |
-| `-ShellExe`                         | current host                                                       | Shell for the new windows (pwsh vs powershell matters for `$PROFILE`); `powershell_ise.exe` auto-falls back to `powershell.exe`                                                                                                           |
+| `-ShellExe`                         | current pwsh                                                       | pwsh executable for the new windows, which load its `$PROFILE`. Windows PowerShell (`powershell.exe`, `powershell_ise.exe`) is rejected, and each window re-checks for PowerShell 7.4+ before it starts `copilot`                         |
 
 ### `watch-mailbox.ps1` — the listening half
 
@@ -382,7 +383,7 @@ scripts/
   render-prompt.ps1           print a role prompt for manual paste
   cleanup-mailbox.ps1         remove cocopilot's footprint from a target
 tests/
-  Cocopilot.Tests.ps1         Pester 5 suite (73 tests, both hosts)
+  Cocopilot.Tests.ps1         Pester 5 suite (76 tests, pwsh 7.4+)
 ```
 
 The real `.mailbox/` state is created **inside each target repo** (git-ignored there); cocopilot's own repo only tracks
@@ -390,24 +391,23 @@ the two `*.example.*` templates.
 
 ## Tests
 
-73 black-box Pester 5 tests cover init, watcher wake/no-wake behavior, own-lane writes and append-only logging, safe
+76 black-box Pester 5 tests cover init, watcher wake/no-wake behavior, own-lane writes and append-only logging, safe
 cleanup (single and recursive), all prompt renders, non-git workspace recovery, session-name/window-title helpers,
-Windows Terminal command-line quoting, npm-installed Copilot resolution, cross-host model catalog parsing and capability
-mapping, numbered model selection, supported effort/context validation, independent Agent A/Agent B argument generation,
-the profile/installer command surface, and whole-file JSON replacement with temp-file cleanup.
+Windows Terminal command-line quoting, the PowerShell 7.4 requirement and native launch-argument passing, npm-installed
+Copilot resolution, model catalog parsing and capability mapping, numbered model selection, supported effort/context
+validation, independent Agent A/Agent B argument generation, the profile/installer command surface, and whole-file JSON
+replacement with temp-file cleanup.
 
-**Prerequisite:** Pester 5 side-by-side per host — Windows PowerShell 5.1 ships inbox Pester 3.4 only:
+**Prerequisite:** Pester 5 for pwsh. pwsh can also see the inbox Pester 3.4 from Windows PowerShell, which is too old:
 
 ```powershell
 Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Scope CurrentUser -Force -SkipPublisherCheck
 ```
 
-Run fail-closed on both hosts (copy/paste as-is from the repo root):
+Run fail-closed from the repo root (copy/paste as-is):
 
 ```powershell
 # single-quoted so the outer shell doesn't expand $-variables before they reach the child host
-powershell.exe -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw "Pester 5 required" }; $c = New-PesterConfiguration; $c.Run.Path = "tests"; $c.Run.Exit = $true; Invoke-Pester -Configuration $c'
-
 pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw "Pester 5 required" }; $c = New-PesterConfiguration; $c.Run.Path = "tests"; $c.Run.Exit = $true; Invoke-Pester -Configuration $c'
 ```
 
@@ -436,8 +436,8 @@ at `3/3` forces both agents to stop and hand you the decision. A vanished _owner
 timeout (deliberately), so a watcher may wait indefinitely — inspect the tree, decide ownership yourself, and if needed
 re-run init with `-Force` (history survives in the session log).
 
-**Why PowerShell?** The Copilot CLI ships on Windows first-class; the scripts run identically on Windows PowerShell 5.1
-and pwsh 7 (byte-identical mailbox writes on both — tested).
+**Why PowerShell?** The Copilot CLI ships on Windows first-class. cocopilot requires PowerShell 7.4 or later (`pwsh`).
+Windows PowerShell 5.1 splits the long launch prompt at its embedded quotes before `copilot` receives it.
 
 **What does cocopilot deliberately NOT do?** No state machine, no schema validation, no file locking, no timeout
 takeover, no daemon, no committed artifacts in your repos. Those solve _unattended_ operation — that's

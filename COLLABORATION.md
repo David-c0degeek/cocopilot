@@ -320,12 +320,12 @@ exactly the write order above (log first, lane last), retries only a
 genuine sharing violation, and never repeats the log append once it has
 already succeeded.
 
-The write operation is fixed too: both hosts must produce identical UTF-8
+The write operation is fixed too: both agents must produce identical UTF-8
 (no BOM) bytes. `write-lane.ps1` already guarantees this; the recipe
 below is the documented **emergency fallback** for when the script itself
 is unavailable or broken — never `Add-Content`, `Set-Content`, or `>>`
-redirection, whose default encodings differ between Windows PowerShell
-5.1 and pwsh 7 and can corrupt non-ASCII content in a BOM-less file:
+redirection, whose encoding and newline output depend on cmdlet defaults
+that a profile or `$PSDefaultParameterValues` can change:
 
 ```powershell
 $utf8 = [System.Text.UTF8Encoding]::new($false)

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.4
 <#
 .SYNOPSIS
     Installs or updates cocopilot on this machine: updates the git clone
@@ -27,9 +27,10 @@
     is idempotent: an existing block is replaced in place, never
     duplicated.
 
-    The block is written to the CURRENT PowerShell edition's
-    CurrentUserAllHosts profile (pwsh and Windows PowerShell keep separate
-    profiles) — run the installer once under each host you use.
+    Requires PowerShell 7.4 or later: run it from pwsh. The block is
+    written to pwsh's CurrentUserAllHosts profile. A block that an earlier
+    version wrote into a Windows PowerShell profile is not removed; delete
+    it there by hand.
 
 .PARAMETER InstallDir
     The cocopilot clone to register. Defaults to this script's own
@@ -48,6 +49,12 @@ param(
     [string]$ProfilePath,
     [switch]$SkipUpdate
 )
+
+# Explicit check on top of #Requires: `irm | iex` ignores #Requires, and
+# this must stop before the bootstrap clone and any profile edit below.
+if ($PSVersionTable.PSVersion -lt [version]'7.4') {
+    throw "cocopilot requires PowerShell 7.4 or later (pwsh). Run this installer from pwsh."
+}
 
 $ErrorActionPreference = "Stop"
 
@@ -113,4 +120,4 @@ if (Test-Path -LiteralPath $ProfilePath) {
 
 Write-Host "$action $ProfilePath" -ForegroundColor Green
 Write-Host "Functions: cocopilot-start, cocopilot-models, cocopilot-prompt, cocopilot-cleanup, cocopilot-update, copilot-opus, copilot-terra, copilot-sol" -ForegroundColor Green
-Write-Host "Restart your shell (or run: . '$snippetPath') to use them now. Run this installer once per PowerShell edition you use (pwsh / Windows PowerShell)." -ForegroundColor Cyan
+Write-Host "Restart pwsh (or run: . '$snippetPath') to use them now." -ForegroundColor Cyan

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.4
 <#
 .SYNOPSIS
     Removes cocopilot's own coordination artifacts (.mailbox/ + its

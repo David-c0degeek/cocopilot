@@ -1,15 +1,12 @@
-#Requires -Version 5.1
+#Requires -Version 7.4
 <#
 .SYNOPSIS
     Pester 5 suite for cocopilot's scripts, black-box against fake target
     repositories under $TestDrive.
 
 .DESCRIPTION
-    Prerequisite: Pester 5 installed side-by-side for the host running the
-    suite — Windows PowerShell 5.1 ships only inbox Pester 3.4, so an
-    unqualified Invoke-Pester there runs the wrong major version. See
-    README.md "Tests" for the exact fail-closed run commands for both
-    hosts.
+    Prerequisite: Pester 5 on PowerShell 7.4 or later (pwsh). See
+    README.md "Tests" for the exact fail-closed run command.
 
     Watcher tests run watch-mailbox.ps1 in a child process (a background
     job) with a bounded -TimeoutSeconds, asserting on its exit code and
@@ -653,7 +650,7 @@ Describe "_models.ps1 helpers" {
         $resolvedSdk | Should -Be $sdkPath
     }
 
-    It "enumerates every model in a top-level JSON array on both PowerShell hosts" {
+    It "enumerates every model in a top-level JSON array" {
         $models = @(ConvertFrom-CocopilotModelJson -Json '[{"id":"model-a"},{"id":"model-b"}]')
 
         $models.Count | Should -Be 2
@@ -909,7 +906,7 @@ Describe "install.ps1 + profile snippet" {
             -AgentAArgs @() `
             -AgentBEffort "max" `
             -AgentBContext "long_context" `
-            -ShellExe "powershell.exe" `
+            -ShellExe "pwsh" `
             -UseWindowsTerminal:$false *>$null
 
         Should -Invoke Start-Process -Times 2 -Exactly
@@ -933,7 +930,7 @@ Describe "install.ps1 + profile snippet" {
             -AgentBModel "gpt-6.1-sol" `
             -AgentBEffort "max" `
             -AgentBContext "long_context" `
-            -ShellExe "powershell.exe" `
+            -ShellExe "pwsh" `
             -UseWindowsTerminal:$false *>$null
 
         Should -Invoke Start-Process -Times 2 -Exactly
@@ -958,7 +955,7 @@ Describe "install.ps1 + profile snippet" {
             -Name "12313 polis" `
             -AgentAArgs @() `
             -AgentBArgs @() `
-            -ShellExe "powershell.exe" `
+            -ShellExe "pwsh" `
             -UseWindowsTerminal:$false *>$null
 
         Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
@@ -1021,6 +1018,64 @@ Describe "install.ps1 + profile snippet" {
         $raw = Get-Content -Raw $p
         ([regex]::Matches($raw, [regex]::Escape("# >>> cocopilot >>>"))).Count | Should -Be 1
         $raw | Should -Match "user content before"
+    }
+}
+
+Describe "start-agents.ps1 PowerShell 7.4 requirement" {
+    It "rejects Windows PowerShell as the agent shell (<_>)" -ForEach @("powershell.exe", "powershell_ise.exe") {
+        $shell = $_
+        $t = New-FakeTarget ("start-reject-" + ($shell -replace '\.', '-'))
+        & $script:initScript -RepoPath $t *>$null
+        Mock Start-Process
+        Mock Start-Sleep
+
+        {
+            & $script:startScript -RepoPath $t -AgentAArgs @() -AgentBArgs @() -ShellExe $shell -UseWindowsTerminal:$false *>$null
+        } | Should -Throw "*requires PowerShell 7.4 or later*"
+        Should -Invoke Start-Process -Times 0 -Exactly
+    }
+
+    It "keeps the launch prompt one native argument when the profile selects Legacy argument passing" {
+        # pwsh itself records the native command line it receives, so this
+        # crosses the real process boundary without an extra dependency.
+        $t = New-FakeTarget "start-native-argv"
+        & $script:initScript -RepoPath $t *>$null
+        $repoPath = (Resolve-Path -LiteralPath $t).Path
+        $pwshPath = (Get-Process -Id $PID).Path
+        $recorder = Join-Path $TestDrive "argv-recorder.ps1"
+        $argvFile = Join-Path $TestDrive "argv.json"
+        [System.IO.File]::WriteAllText($recorder,
+            '[System.IO.File]::WriteAllText($env:COCOPILOT_TEST_ARGV_OUT, (ConvertTo-Json -InputObject ([Environment]::GetCommandLineArgs()) -Compress))',
+            $script:utf8NoBom)
+        # A plain local (not $script:): the mock body runs inside
+        # start-agents.ps1, whose script scope would shadow $script: here.
+        $launches = [System.Collections.Generic.List[object]]::new()
+        Mock Start-Process { $launches.Add(@($ArgumentList)) }
+        Mock Start-Sleep
+
+        & $script:startScript -RepoPath $t -AgentACommand $pwshPath -AgentAArgs @("-NoProfile", "-File", $recorder) `
+            -AgentBArgs @() -ShellExe $pwshPath -UseWindowsTerminal:$false *>$null
+
+        # Drop only the window-title statement: it would retitle the console
+        # that runs this suite and has no effect on argument passing.
+        $innerScript = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($launches[0][2])).
+            Replace((Get-CocopilotWindowTitleStatement -Title "cocopilot-agent-a"), "")
+        $legacyProfile = "`$PSNativeCommandArgumentPassing = 'Legacy'; "
+        $previousArgvOut = $env:COCOPILOT_TEST_ARGV_OUT
+        $env:COCOPILOT_TEST_ARGV_OUT = $argvFile
+        try {
+            & $pwshPath -NoProfile -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($legacyProfile + $innerScript))) *>$null
+        } finally {
+            $env:COCOPILOT_TEST_ARGV_OUT = $previousArgvOut
+        }
+
+        $argv = @([System.IO.File]::ReadAllText($argvFile) | ConvertFrom-Json)
+        $received = @($argv | Select-Object -Skip ([array]::IndexOf([string[]]$argv, $recorder) + 1))
+        $expectedPrompt = (Get-CocopilotSessionBanner -RepoPath $repoPath -CocopilotRoot $script:repoRoot -AgentRole "agent-a") +
+            (Get-Content -LiteralPath (Join-Path $script:repoRoot "prompts\agent-a.md") -Raw)
+        $received.Count | Should -Be 8
+        ($received[0..6] -join "|") | Should -Be (@("-C", $repoPath, "-n", "cocopilot-agent-a", "--add-dir", $script:repoRoot, "-i") -join "|")
+        $received[7] | Should -BeExactly $expectedPrompt
     }
 }
 

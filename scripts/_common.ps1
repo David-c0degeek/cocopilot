@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.4
 <#
 .SYNOPSIS
     Shared helpers for cocopilot's launcher scripts. Dot-source this, don't
@@ -31,15 +31,10 @@ function Write-MailboxJson {
 
     $dir = Split-Path -Parent $Path
     $tmp = Join-Path $dir (".{0}.{1}.tmp" -f (Split-Path -Leaf $Path), [Guid]::NewGuid().ToString("N"))
-    # -Compress: non-compressed ConvertTo-Json output is formatted
-    # differently by Windows PowerShell 5.1 vs pwsh 7, which would make this
-    # watched file's bytes churn whenever the peer runs the other host.
-    # Compressed output is byte-identical on both.
-    $json = ($Object | ConvertTo-Json -Depth 5 -Compress) + "`n"
+    $json =  ($Object | ConvertTo-Json -Depth 5 -Compress) + "`n"
     $moved = $false
     try {
-        # UTF-8 without BOM via .NET so Windows PowerShell 5.1 and pwsh 7
-        # produce identical bytes.
+        # UTF-8 without BOM via .NET, independent of cmdlet encoding defaults.
         [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
         # -ErrorAction Stop: the failure must terminate regardless of the
         # caller's $ErrorActionPreference, or the finally-cleanup is skipped

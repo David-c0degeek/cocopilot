@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.4
 <#
 .SYNOPSIS
     Internal model discovery and launch-configuration helpers.
@@ -214,9 +214,8 @@ function Find-CocopilotSdkPath {
 function ConvertFrom-CocopilotModelJson {
     param([Parameter(Mandatory)][string]$Json)
 
-    # Windows PowerShell 5.1 sends a top-level JSON array through the pipeline
-    # as one array object. Assign first, then foreach so both supported hosts
-    # emit one model object per item.
+    # Assign first, then foreach, so a top-level JSON array always emits one
+    # model object per item.
     $parsedModels = $Json | ConvertFrom-Json
     foreach ($model in $parsedModels) { $model }
 }

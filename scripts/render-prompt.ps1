@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.4
 <#
 .SYNOPSIS
     Prints the ready-to-paste prompt (session-context banner + role prompt)

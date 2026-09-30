@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.4
 <#
 .SYNOPSIS
     Initializes the local (git-ignored) mailbox state for a target
@@ -156,8 +156,8 @@ foreach ($lanePath in $lanePaths) {
 }
 
 # Write-once session history: created once, preserved forever after — even
-# -Force only appends a reset marker. UTF-8 without BOM via .NET so Windows
-# PowerShell 5.1 and pwsh 7 produce identical bytes.
+# -Force only appends a reset marker. UTF-8 without BOM via .NET, like every
+# other mailbox write.
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $nowUtc = [DateTime]::UtcNow.ToString("yyyy-MM-dd HH:mm:ss'Z'")
 if (-not (Test-Path -LiteralPath $sessionLogPath)) {
