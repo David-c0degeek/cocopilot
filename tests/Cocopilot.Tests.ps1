@@ -665,13 +665,13 @@ Describe "_models.ps1 helpers" {
         $completion = @'
 case "$prev" in
   --model)
-    COMPREPLY=( $(compgen -W 'auto claude-sonnet-5 gpt-6-sol' -- "$cur") )
+    COMPREPLY=( $(compgen -W 'auto claude-sonnet-5 gpt-6.1-sol' -- "$cur") )
     return 0
     ;;
 esac
 '@
         $models = @(ConvertFrom-CocopilotCompletionModels -CompletionText $completion)
-        $models | Should -Be @("auto", "claude-sonnet-5", "gpt-6-sol")
+        $models | Should -Be @("auto", "claude-sonnet-5", "gpt-6.1-sol")
     }
 
     It "maps live model metadata to supported effort and context settings" {
@@ -837,10 +837,10 @@ esac
 
     It "builds the typed Copilot argument array in launch order" {
         $arguments = New-CocopilotAgentArguments `
-            -Model "gpt-6-sol" -Effort "max" -Context "long_context"
+            -Model "gpt-6.1-sol" -Effort "max" -Context "long_context"
 
         $arguments | Should -Be @(
-            "--model", "gpt-6-sol",
+            "--model", "gpt-6.1-sol",
             "--effort", "max",
             "--context", "long_context",
             "--autopilot",
@@ -877,14 +877,46 @@ Describe "install.ps1 + profile snippet" {
         @($errors).Count | Should -Be 0
     }
 
-    It "defines a copilot-sol shortcut with Sol long-context defaults" {
+    It "defines a copilot-sol shortcut with GPT-6.1 Sol long-context defaults" {
         $arguments = & {
             function copilot { $args -join "|" }
             . $script:snippetPath
             copilot-sol "extra-argument"
         }
 
-        $arguments | Should -Be "--model|gpt-6-sol|--effort|max|--context|long_context|--autopilot|--allow-all|extra-argument"
+        $arguments | Should -Be "--model|gpt-6.1-sol|--effort|max|--context|long_context|--autopilot|--allow-all|extra-argument"
+    }
+
+    It "suggests GPT-6.1 Sol for agent-b when both Sol versions are available" {
+        $t = New-FakeTarget "start-default-sol-model"
+        & $script:initScript -RepoPath $t *>$null
+        Mock Get-CocopilotModelCatalog {
+            @(
+                ConvertTo-CocopilotModelDescriptor `
+                    -Model ([pscustomobject]@{ id = "gpt-6-sol"; name = "GPT-6 Sol" }) `
+                    -Source cli-completion
+                ConvertTo-CocopilotModelDescriptor `
+                    -Model ([pscustomobject]@{ id = "gpt-6.1-sol"; name = "GPT-6.1 Sol" }) `
+                    -Source cli-completion
+            )
+        }
+        Mock Read-Host { "" }
+        Mock Start-Process
+        Mock Start-Sleep
+
+        & $script:startScript `
+            -RepoPath $t `
+            -AgentAArgs @() `
+            -AgentBEffort "max" `
+            -AgentBContext "long_context" `
+            -ShellExe "powershell.exe" `
+            -UseWindowsTerminal:$false *>$null
+
+        Should -Invoke Start-Process -Times 2 -Exactly
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+            $invocation = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[2]))
+            $invocation -match [regex]::Escape("'--model' 'gpt-6.1-sol' '--effort' 'max' '--context' 'long_context' '--autopilot' '--allow-all'")
+        }
     }
 
     It "assigns explicit model/settings independently to agent-a and agent-b" {
@@ -898,7 +930,7 @@ Describe "install.ps1 + profile snippet" {
             -AgentAModel "claude-sonnet-5" `
             -AgentAEffort "high" `
             -AgentAContext "default" `
-            -AgentBModel "gpt-6-sol" `
+            -AgentBModel "gpt-6.1-sol" `
             -AgentBEffort "max" `
             -AgentBContext "long_context" `
             -ShellExe "powershell.exe" `
@@ -911,7 +943,7 @@ Describe "install.ps1 + profile snippet" {
         }
         Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
             $invocation = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[2]))
-            $invocation -match [regex]::Escape("'--model' 'gpt-6-sol' '--effort' 'max' '--context' 'long_context' '--autopilot' '--allow-all'")
+            $invocation -match [regex]::Escape("'--model' 'gpt-6.1-sol' '--effort' 'max' '--context' 'long_context' '--autopilot' '--allow-all'")
         }
     }
 
@@ -944,7 +976,7 @@ Describe "install.ps1 + profile snippet" {
     It "rejects mixing a typed model with the expert raw argument override" {
         $t = New-FakeTarget "start-mixed-model-input"
         {
-            & $script:startScript -RepoPath $t -AgentAArgs @() -AgentAModel "gpt-6-sol" *>$null
+            & $script:startScript -RepoPath $t -AgentAArgs @() -AgentAModel "gpt-6.1-sol" *>$null
         } | Should -Throw "*-AgentAArgs cannot be combined*"
     }
 

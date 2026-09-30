@@ -94,7 +94,7 @@
 .PARAMETER AgentBModel
     Model assigned to agent-b. If omitted (and -AgentBArgs was not
     explicitly bound), opens the model/settings picker. The picker defaults
-    to gpt-6-sol when it is available.
+    to gpt-6.1-sol when it is available.
 
 .PARAMETER AgentBEffort
     Optional reasoning effort for agent-b.
@@ -147,7 +147,7 @@
     # assign to agent-a and agent-b
 
 .EXAMPLE
-    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentAModel claude-opus-5.5 -AgentAEffort max -AgentAContext long_context -AgentBModel gpt-6-sol -AgentBEffort max -AgentBContext long_context
+    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentAModel claude-opus-5.5 -AgentAEffort max -AgentAContext long_context -AgentBModel gpt-6.1-sol -AgentBEffort max -AgentBContext long_context
     # non-interactive role assignment with explicit model settings
 
 .EXAMPLE
@@ -247,7 +247,7 @@ if ($needsAgentASelection) {
     $promptForAgentASettings = $true
 }
 if ($needsAgentBSelection) {
-    $agentBModelDescriptor = Read-CocopilotModelChoice -Catalog $catalog -RoleLabel "Agent B" -DefaultModelId "gpt-6-sol"
+    $agentBModelDescriptor = Read-CocopilotModelChoice -Catalog $catalog -RoleLabel "Agent B" -DefaultModelId "gpt-6.1-sol"
     $AgentBModel = $agentBModelDescriptor.Id
     $promptForAgentBSettings = $true
 }

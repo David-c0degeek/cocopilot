@@ -16,8 +16,8 @@ function copilot-terra {
 }
 
 function copilot-sol {
-    # Plain copilot CLI pinned to gpt-6-sol with cocopilot's default flags.
-    copilot --model gpt-6-sol --effort max --context long_context --autopilot --allow-all @args
+    # Plain copilot CLI pinned to gpt-6.1-sol with cocopilot's default flags.
+    copilot --model gpt-6.1-sol --effort max --context long_context --autopilot --allow-all @args
 }
 
 function Initialize-CocopilotMailboxIfMissing {
