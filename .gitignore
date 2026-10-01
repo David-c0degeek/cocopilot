@@ -1,6 +1,13 @@
-# Per-machine mailbox state (durable ownership record + ephemeral lane scratchpads).
+# Per-machine mailbox state: ownership record, lanes, session log, delivery
+# cursors, pinned verify request, handoff baselines, lock and writer temps.
 # Only the *.example.* templates are tracked.
 .mailbox/implementer.json
 .mailbox/agent-a.md
 .mailbox/agent-b.md
 .mailbox/session.log.md
+.mailbox/agent-a.cursor
+.mailbox/agent-b.cursor
+.mailbox/verify-request.md
+.mailbox/implementer.lock
+.mailbox/baseline-*.json
+.mailbox/.*.tmp

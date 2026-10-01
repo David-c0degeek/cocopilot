@@ -1,4 +1,5 @@
 #Requires -Version 7.4
+
 <#
 .SYNOPSIS
     Launches two GitHub Copilot CLI instances in separate terminal windows,
@@ -12,32 +13,45 @@
     cocopilot's own location. Only the mailbox (.mailbox/) is created inside
     that target repository.
 
-    By default each agent is launched as a plain, literal `copilot`
-    invocation — not a personal PowerShell profile function/alias — so this
-    works the same for anyone with the `copilot` CLI on PATH, without
-    requiring any particular $PROFILE setup. Assign each role with
+    By default each agent is launched through the full path of the first
+    `copilot` native executable or PowerShell script on PATH — never a
+    same-name alias or function from a personal PowerShell profile, and
+    never a cmd shim (.cmd/.bat), which cannot carry the multi-line prompt
+    and is skipped with a warning — so this works the same for anyone with
+    the `copilot` CLI on PATH, without requiring any particular $PROFILE
+    setup. If no such CLI exists, the launcher stops before model
+    discovery or any window opens. Assign each role with
     -AgentAModel/-AgentBModel and optional effort/context settings. When a
-    role has neither a model nor an explicitly-bound raw -AgentAArgs/
-    -AgentBArgs array, the launcher shows the available model catalog and
-    prompts for that role's model and supported settings.
+    role has neither a model nor an explicitly-bound raw
+    -AgentAArgs/-AgentBArgs array, the launcher shows the available model
+    catalog and prompts for that role's model and supported settings.
 
     If you keep your own shortcut functions (e.g. a `copilot-opus`
     function that already bakes in your preferred flags), pass its name via
     -AgentACommand/-AgentBCommand and explicitly pass the corresponding
-    -AgentAArgs/-AgentBArgs @(). An explicitly-bound raw argument array is
+    -AgentAArgs/-AgentBArgs @(). An explicitly passed command is launched
+    as given, without resolution. An explicitly-bound raw argument array is
     the expert escape hatch: it suppresses the typed model picker for that
     role and is passed through unchanged.
 
     Opens two new console windows in the same shell you're currently
     running this from (see -ShellExe) and runs, in the target repository:
 
-        <AgentACommand> <AgentAArgs> -C <RepoPath> -n <NameA> -i <banner + prompts/agent-a.md>
-        <AgentBCommand> <AgentBArgs> -C <RepoPath> -n <NameB> -i <banner + prompts/agent-b.md>
+        <AgentACommand> <AgentAArgs> -C <RepoPath> -n <NameA> -i <banner + agent-a prompt>
+        <AgentBCommand> <AgentBArgs> -C <RepoPath> -n <NameB> -i <banner + agent-b prompt>
 
-    The banner (see _common.ps1) tells each agent the target repo path, the
-    mailbox location, where to find COLLABORATION.md, and the exact
-    watch/init commands to run — all resolved to this cocopilot install, so
-    the prompts themselves never need to hardcode a repo name or path.
+    Each new window renders its own prompt with render-prompt.ps1 from the
+    shared prompts/agent.md template, so the launch command itself carries
+    only paths and arguments and stays far below the Windows command-line
+    limit. PowerShell's execution policy in a new pwsh session must
+    therefore allow cocopilot's scripts, as it already must for the
+    installed profile functions. The rendered prompt itself still reaches
+    copilot as one command-line argument, which Windows limits to 32,767
+    characters; with 220-character paths it is about 13,900 characters.
+    The banner (see _common.ps1) tells each agent the target repo path,
+    the mailbox location, where to find COLLABORATION.md, and the exact
+    watch/init commands to run — all resolved to this cocopilot install,
+    so the prompts themselves never need to hardcode a repo name or path.
 
     Agent A starts as the active implementer/driver (per
     <RepoPath>/.mailbox, see init-mailbox.ps1). Agent B starts as the
@@ -47,6 +61,9 @@
 
     Run the init-mailbox.ps1 script from this cocopilot install with
     -RepoPath <RepoPath> first if that repository's mailbox doesn't exist yet.
+    A mailbox without delivery cursors (from an older cocopilot) only gets a
+    warning: both agents still start, and the first watch of each agent
+    without a cursor replays the whole session log.
 
 .PARAMETER RepoPath
     The repository to pair on. Defaults to the current directory.
@@ -60,11 +77,11 @@
     context".
 
 .PARAMETER AgentACommand
-    Executable/command to run for agent-a. Defaults to "copilot" (the real
-    CLI, expected on PATH). Pass a personal shortcut function name instead
-    (e.g. "copilot-opus") if you have one defined in your $PROFILE — in
-    that case also pass -AgentAArgs @() since your function already bakes
-    in its own flags.
+    Command to run for agent-a. When omitted, the full path of the `copilot`
+    CLI on PATH is used (see DESCRIPTION). Pass a personal shortcut function
+    name instead (e.g. "copilot-opus") if you have one defined in your
+    $PROFILE — in that case also pass -AgentAArgs @() since your function
+    already bakes in its own flags. An explicit value is launched as given.
 
 .PARAMETER AgentAArgs
     Complete expert argument array appended after AgentACommand, before
@@ -86,7 +103,7 @@
     against account model metadata when the picker is active.
 
 .PARAMETER AgentBCommand
-    Executable/command to run for agent-b. Defaults to "copilot".
+    Command to run for agent-b. Same resolution as -AgentACommand.
 
 .PARAMETER AgentBArgs
     Same expert override behavior as -AgentAArgs, for agent-b.
@@ -160,12 +177,12 @@
 param(
     [string]$RepoPath = (Get-Location).Path,
     [string]$ContextRoot,
-    [string]$AgentACommand = "copilot",
+    [string]$AgentACommand,
     [string[]]$AgentAArgs,
     [string]$AgentAModel,
     [ValidateSet("none", "minimal", "low", "medium", "high", "xhigh", "max")][string]$AgentAEffort,
     [ValidateSet("default", "long_context")][string]$AgentAContext,
-    [string]$AgentBCommand = "copilot",
+    [string]$AgentBCommand,
     [string[]]$AgentBArgs,
     [string]$AgentBModel,
     [ValidateSet("none", "minimal", "low", "medium", "high", "xhigh", "max")][string]$AgentBEffort,
@@ -206,8 +223,6 @@ if ((Split-Path -Leaf $ShellExe) -match '^powershell(_ise)?(\.exe)?$') {
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
 if ($ContextRoot) { $ContextRoot = (Resolve-Path -LiteralPath $ContextRoot).Path }
 $cocopilotRoot = Split-Path -Parent $PSScriptRoot
-$promptA = Join-Path $cocopilotRoot "prompts\agent-a.md"
-$promptB = Join-Path $cocopilotRoot "prompts\agent-b.md"
 $initMailboxScript = Join-Path $PSScriptRoot "init-mailbox.ps1"
 $mailboxFiles = @("implementer.json", "agent-a.md", "agent-b.md", "session.log.md") |
     ForEach-Object { Join-Path $RepoPath ".mailbox\$_" }
@@ -216,9 +231,27 @@ if (@($mailboxFiles | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -
     $initCommand = Get-CocopilotInitCommand -RepoPath $RepoPath -InitScript $initMailboxScript
     throw "Mailbox state for '$RepoPath' is incomplete; run $initCommand first."
 }
-foreach ($p in @($promptA, $promptB)) {
-    if (-not (Test-Path -LiteralPath $p)) { throw "Missing prompt file: $p" }
+# A missing delivery cursor (a mailbox from an older cocopilot) makes that
+# agent's first watch replay the whole log, which is the safe default. Only
+# the human can decide that the history so far is handled, so the launcher
+# warns and never creates a cursor itself.
+$agentsWithoutCursor = @(@("agent-a", "agent-b") | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $RepoPath ".mailbox\$_.cursor"))
+    })
+if ($agentsWithoutCursor.Count -gt 0) {
+    $initCommand = Get-CocopilotInitCommand -RepoPath $RepoPath -InitScript $initMailboxScript
+    $logKilobytes = [Math]::Ceiling((Get-Item -LiteralPath (Join-Path $RepoPath ".mailbox\session.log.md")).Length / 1KB)
+    Write-Warning ("The mailbox has no delivery cursor for $($agentsWithoutCursor -join ' and '). The first watch of " +
+        "each agent without a cursor replays the whole session log ($logKilobytes KB) from its start. That is the " +
+        "safe default. To count the log so far as handled instead, first make sure every entry so far is handled, " +
+        "with no STOP or QUESTION still pending. Then stop both agents, run $initCommand -AcknowledgeHistory, and " +
+        "start them again.")
 }
+# Render both role prompts before model discovery, so a missing or broken
+# template fails before any window opens. Each window renders its own copy
+# again at launch.
+$null = Get-CocopilotRolePrompt -CocopilotRoot $cocopilotRoot -AgentRole "agent-a"
+$null = Get-CocopilotRolePrompt -CocopilotRoot $cocopilotRoot -AgentRole "agent-b"
 
 $catalog = @()
 $agentAModelDescriptor = $null
@@ -227,9 +260,22 @@ $promptForAgentASettings = $false
 $promptForAgentBSettings = $false
 $needsAgentASelection = -not $agentAArgsBound -and [string]::IsNullOrWhiteSpace($AgentAModel)
 $needsAgentBSelection = -not $agentBArgsBound -and [string]::IsNullOrWhiteSpace($AgentBModel)
+$needsCatalog = $needsAgentASelection -or $needsAgentBSelection
 
-if ($needsAgentASelection -or $needsAgentBSelection) {
-    $catalog = @(Get-CocopilotModelCatalog)
+# A role without an explicit command, and any model discovery, use the
+# stock CLI by full path, so a same-name profile function cannot replace
+# it here or in the new windows. Explicit commands are launched as given.
+$agentACommandBound = $PSBoundParameters.ContainsKey("AgentACommand")
+$agentBCommandBound = $PSBoundParameters.ContainsKey("AgentBCommand")
+$stockCopilot = $null
+if ($needsCatalog -or -not $agentACommandBound -or -not $agentBCommandBound) {
+    $stockCopilot = Resolve-CocopilotCommand
+}
+if (-not $agentACommandBound) { $AgentACommand = $stockCopilot }
+if (-not $agentBCommandBound) { $AgentBCommand = $stockCopilot }
+
+if ($needsCatalog) {
+    $catalog = @(Get-CocopilotModelCatalog -CopilotCommand $stockCopilot)
     Show-CocopilotModelCatalog -Catalog $catalog
 }
 if ($needsAgentASelection) {
@@ -293,29 +339,35 @@ function Start-CopilotAgent {
         [string]$AgentCommand,
         [string[]]$AgentArgs,
         [string]$Name,
-        [string]$PromptPath,
         [ValidateSet("agent-a", "agent-b")][string]$AgentRole,
         [string]$ShellExe,
         [switch]$UseWindowsTerminal
     )
 
-    $banner = Get-CocopilotSessionBanner -RepoPath $RepoPath -CocopilotRoot $CocopilotRoot -AgentRole $AgentRole -ContextRoot $ContextRoot
-    $fullPrompt = $banner + (Get-Content -LiteralPath $PromptPath -Raw)
-
     $agentCommandQ = ConvertTo-SingleQuoted $AgentCommand
     $agentArgsQ = ($AgentArgs | ForEach-Object { ConvertTo-SingleQuoted $_ }) -join " "
     $repoQ = ConvertTo-SingleQuoted $RepoPath
     $nameQ = ConvertTo-SingleQuoted $Name
-    $promptQ = ConvertTo-SingleQuoted $fullPrompt
     $addDirQ = ConvertTo-SingleQuoted $CocopilotRoot
+    $contextRootQ = if ($ContextRoot) { ConvertTo-SingleQuoted $ContextRoot } else { "" }
+    $renderScriptQ = ConvertTo-SingleQuoted (Join-Path $CocopilotRoot "scripts\render-prompt.ps1")
+    $renderAgent = if ($AgentRole -eq "agent-a") { "a" } else { "b" }
+
+    # The new window renders its own prompt, so the encoded command carries
+    # only paths and arguments. An embedded prompt, encoded as UTF-16 Base64,
+    # would push long-path launches past the Windows command-line limit of
+    # 32,767 characters. A failed render throws before copilot starts.
+    $renderContextArg = if ($ContextRoot) { " -ContextRoot $contextRootQ" } else { "" }
+    $renderPrompt = "`$prompt = (& $renderScriptQ -Agent $renderAgent -RepoPath $repoQ$renderContextArg) -join [Environment]::NewLine; " +
+        "if ([string]::IsNullOrWhiteSpace(`$prompt)) { throw 'cocopilot rendered an empty agent prompt.' }; "
 
     # --add-dir grants read/run access to cocopilot's own install (for
     # COLLABORATION.md and the watch/init scripts) even if AgentCommand's
     # underlying alias doesn't already pass --allow-all-paths. A second
     # --add-dir opens the optional workspace context root; the read-only
     # discipline for it is the protocol's, not the CLI's.
-    $contextDirArg = if ($ContextRoot) { "--add-dir $(ConvertTo-SingleQuoted $ContextRoot) " } else { "" }
-    $copilotInvocation = ("& $agentCommandQ " + $(if ($agentArgsQ) { "$agentArgsQ " } else { "" }) + "-C $repoQ -n $nameQ --add-dir $addDirQ $contextDirArg-i $promptQ").Trim()
+    $contextDirArg = if ($ContextRoot) { "--add-dir $contextRootQ " } else { "" }
+    $copilotInvocation = ("& $agentCommandQ " + $(if ($agentArgsQ) { "$agentArgsQ " } else { "" }) + "-C $repoQ -n $nameQ --add-dir $addDirQ $contextDirArg-i `$prompt").Trim()
 
     # Runs first in the new window: an explicit -ShellExe that points at an
     # older pwsh must fail before anything else happens.
@@ -331,13 +383,13 @@ function Start-CopilotAgent {
     # all; harmless alongside wt.exe's own --title/--suppressApplicationTitle
     # below (that pair keeps the wt tab's title fixed regardless of
     # whatever this in-process statement does).
-    $innerScript = $hostGuard + $argumentPassing + (Get-CocopilotWindowTitleStatement -Title $Name) + $copilotInvocation
+    $innerScript = $hostGuard + $argumentPassing + (Get-CocopilotWindowTitleStatement -Title $Name) + $renderPrompt + $copilotInvocation
 
     # -EncodedCommand avoids nested PowerShell quoting problems (spaces or
-    # quotes in RepoPath or the prompt text); the argument-passing pin above
-    # covers the native copilot boundary. It still loads $ShellExe's own
-    # $PROFILE, so a personal shortcut function passed via
-    # -AgentACommand/-AgentBCommand is available in the new window.
+    # quotes in paths or names); the argument-passing pin above covers the
+    # native copilot boundary. It still loads $ShellExe's own $PROFILE, so a
+    # personal shortcut function passed via -AgentACommand/-AgentBCommand is
+    # available in the new window.
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerScript))
 
     if ($UseWindowsTerminal -and (Get-Command wt.exe -ErrorAction SilentlyContinue)) {
@@ -375,8 +427,8 @@ Write-Host ("Agent B -> '{0}' | command: {1} | model: {2} | effort: {3} | contex
     $(if ($agentBEffortDisplay) { $agentBEffortDisplay } else { "model default" }),
     $(if ($agentBContextDisplay) { $agentBContextDisplay } else { "model default" })) -ForegroundColor Cyan
 
-Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentACommand -AgentArgs $AgentAArgs -Name $NameA -PromptPath $promptA -AgentRole "agent-a" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal
+Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentACommand -AgentArgs $AgentAArgs -Name $NameA -AgentRole "agent-a" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal
 Start-Sleep -Seconds 1
-Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentBCommand -AgentArgs $AgentBArgs -Name $NameB -PromptPath $promptB -AgentRole "agent-b" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal
+Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentBCommand -AgentArgs $AgentBArgs -Name $NameB -AgentRole "agent-b" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal
 
 Write-Host "Launched $NameA via '$AgentACommand' and $NameB via '$AgentBCommand' (shell: $ShellExe), paired on $RepoPath." -ForegroundColor Green

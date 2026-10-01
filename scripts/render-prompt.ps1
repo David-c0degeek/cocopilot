@@ -1,4 +1,5 @@
 #Requires -Version 7.4
+
 <#
 .SYNOPSIS
     Prints the ready-to-paste prompt (session-context banner + role prompt)
@@ -41,16 +42,12 @@ $ErrorActionPreference = "Stop"
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
 if ($ContextRoot) { $ContextRoot = (Resolve-Path -LiteralPath $ContextRoot).Path }
 $cocopilotRoot = Split-Path -Parent $PSScriptRoot
-# Explicit three-way mapping — role id and prompt filename don't follow one
-# shared pattern ("verifier" has no "agent-" prefix), so map both by name.
 switch ($Agent) {
-    "a"        { $agentRole = "agent-a";  $promptFile = "agent-a.md" }
-    "b"        { $agentRole = "agent-b";  $promptFile = "agent-b.md" }
-    "verifier" { $agentRole = "verifier"; $promptFile = "verifier.md" }
+    "a"        { $agentRole = "agent-a" }
+    "b"        { $agentRole = "agent-b" }
+    "verifier" { $agentRole = "verifier" }
 }
-$promptPath = Join-Path $cocopilotRoot "prompts\$promptFile"
 
-if (-not (Test-Path -LiteralPath $promptPath)) { throw "Missing prompt file: $promptPath" }
-
+$rolePrompt = Get-CocopilotRolePrompt -CocopilotRoot $cocopilotRoot -AgentRole $agentRole
 $banner = Get-CocopilotSessionBanner -RepoPath $RepoPath -CocopilotRoot $cocopilotRoot -AgentRole $agentRole -ContextRoot $ContextRoot
-$banner + (Get-Content -LiteralPath $promptPath -Raw)
+$banner + $rolePrompt

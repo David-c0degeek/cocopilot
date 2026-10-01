@@ -6,5 +6,6 @@
   "from": null,
   "to": null,
   "head": "0000000000000000000000000000000000000000",
-  "dirty_manifest": []
+  "dirty_manifest": [],
+  "baseline": null
 }

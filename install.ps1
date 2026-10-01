@@ -1,4 +1,5 @@
 #Requires -Version 7.4
+
 <#
 .SYNOPSIS
     Installs or updates cocopilot on this machine: updates the git clone
@@ -57,6 +58,10 @@ if ($PSVersionTable.PSVersion -lt [version]'7.4') {
 }
 
 $ErrorActionPreference = "Stop"
+# Expected non-zero git exits (not a clone, pull failed) are handled through
+# $LASTEXITCODE below, whatever the caller's profile sets here. A missing git
+# still fails loudly.
+$PSNativeCommandUseErrorActionPreference = $false
 
 if (-not $InstallDir) {
     # Piped via `irm | iex`: no script location. Bootstrap: clone, then
@@ -94,7 +99,7 @@ if (-not $SkipUpdate) {
 # 2. Register the marker-guarded dot-source block in the profile.
 $beginMarker = "# >>> cocopilot >>>"
 $endMarker = "# <<< cocopilot <<<"
-$block = "$beginMarker`n. '$($snippetPath -replace "'", "''")'`n$endMarker"
+$block = "$beginMarker`n. '$([System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($snippetPath))'`n$endMarker"
 
 $profileDir = Split-Path -Parent $ProfilePath
 if ($profileDir -and -not (Test-Path -LiteralPath $profileDir)) {
@@ -103,11 +108,16 @@ if ($profileDir -and -not (Test-Path -LiteralPath $profileDir)) {
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 if (Test-Path -LiteralPath $ProfilePath) {
+    # An existing empty profile reads back as $null (no pipeline output).
     $raw = Get-Content -LiteralPath $ProfilePath -Raw
+    if ($null -eq $raw) { $raw = "" }
     $pattern = "(?s)" + [regex]::Escape($beginMarker) + ".*?" + [regex]::Escape($endMarker)
     if ($raw -match $pattern) {
         $newRaw = [regex]::Replace($raw, $pattern, { param($m) $block })
         $action = "Refreshed the cocopilot block in"
+    } elseif ($raw.Trim().Length -eq 0) {
+        $newRaw = $block + "`n"
+        $action = "Wrote the cocopilot block into the empty profile"
     } else {
         $newRaw = $raw.TrimEnd() + "`n`n" + $block + "`n"
         $action = "Appended the cocopilot block to"

@@ -1,58 +1,56 @@
 #Requires -Version 7.4
+
 <#
 .SYNOPSIS
-    Removes cocopilot's own coordination artifacts (.mailbox/ + its
-    .gitignore rule) from one target repository, or from every repository
-    found underneath a root when -Recurse is passed.
+    Removes cocopilot's own coordination artifacts (its .mailbox/ files and
+    ignore rule) from one target repository, or from every repository found
+    underneath a root when -Recurse is passed.
 
 .DESCRIPTION
     cocopilot never wants its own coordination state to end up committed
-    into a project you're pairing on. For a single target this script:
+    into a project you're pairing on, and it never deletes anything it did
+    not create. For a single target this script:
 
-      1. Un-tracks any .mailbox/ paths that somehow ended up in the target
-         repo's git index (git rm --cached) — this should never happen
-         given init-mailbox.ps1's own .gitignore rule, but is checked and
-         fixed defensively.
-      2. Deletes <RepoPath>/.mailbox/ from disk.
-      3. Removes exactly the "# Per-machine cocopilot mailbox state..."
-         comment + .mailbox/ line that init-mailbox.ps1 appended to the
-         target repo's .gitignore, leaving the rest of that file (and any
-         unrelated .mailbox/ rule the user added themselves, without
-         cocopilot's comment above it) untouched. If the .gitignore file
-         was created solely by init-mailbox.ps1 (i.e. it's empty after
-         removing our block), the file itself is deleted too.
+      1. Refuses, before changing anything, when the target is a cocopilot
+         install (its own path, or any path to a directory whose .mailbox/
+         holds cocopilot's *.example.* templates), when git tracks anything
+         under .mailbox/, when .mailbox/ is a reparse point, or when the
+         mailbox is not cocopilot's (its implementer.json is not an
+         ownership record, or session.log.md lacks cocopilot's marker).
+      2. Deletes only the files cocopilot creates there (implementer.json,
+         agent-a.md, agent-b.md, session.log.md, the two delivery cursors,
+         verify-request.md, implementer.lock, the baseline-<id>.json
+         handoff baselines, and the writer's own ".<name>.<guid>.tmp"
+         files). The directory is removed only when it is then empty;
+         anything else in it is kept and reported.
+      3. Removes cocopilot's managed block for this target from the
+         repository's .git/info/exclude, leaving every other rule there
+         (including a user's own .mailbox rule) untouched.
+      4. Removes the legacy "# Per-machine cocopilot mailbox state..."
+         comment + .mailbox/ line that older init-mailbox.ps1 versions
+         appended to .gitignore, keeping the file's UTF-8 BOM state. If
+         that file held nothing else, it is deleted.
 
-    -RepoPath resolving to cocopilot's own installed repo is refused
-    outright (single-target: throws; -Recurse: excluded from discovery and
-    reported as a discovery issue) — that repo is a tool you pair *from*,
-    never a project you pair *on*, and its .mailbox/ intentionally tracks
-    the two *.example.* templates init-mailbox.ps1 reads from. Treating
-    those tracked files as the "should never happen" case in step 1 would
-    otherwise untrack and delete them.
-
-    This does NOT touch anything else in the target repository — not the
-    agents' actual work, not unrelated .gitignore rules, not git history.
-    Supports -WhatIf/-Confirm since it deletes files; nothing here commits
-    anything on your behalf — un-tracking via git rm --cached only stages
-    the removal, you still commit it yourself.
+    This does NOT touch anything else in the target repository - not the
+    agents' actual work, not other ignore rules, not the git index, not git
+    history. Supports -WhatIf/-Confirm since it deletes files.
 
     With -Recurse, -RepoPath is instead treated as a search root: this
     walks -RepoPath and every directory underneath it (including
     -RepoPath itself) looking for a .mailbox/ directory, and runs the
-    exact same single-repo cleanup above against every repository found —
-    e.g. run against C:\Repos to clean every paired repo directly beneath
-    it in one pass. The walk never descends into a directory named .git
-    or node_modules, and never follows a reparse point (symbolic link,
-    junction, or mount point) — so a junction can't create a traversal
-    cycle back up the tree, or walk the search outside the requested
-    root. A directory that can't be enumerated (e.g. access denied) is
-    recorded as a discovery failure rather than silently skipped. A
-    .mailbox/ that is itself a reparse point is never treated as a valid
-    cleanup target either — cocopilot never creates it that way — and is
-    rejected and reported the same way, in both -Recurse discovery and
-    the single-target path.
+    exact same single-repo cleanup above against every cocopilot mailbox
+    found - e.g. run against C:\Repos to clean every paired repo beneath
+    it in one pass. A .mailbox/ that is not a cocopilot mailbox is skipped
+    and listed in the summary, not treated as a failure. The walk never
+    descends into a directory named .git or node_modules, and never
+    follows a reparse point (symbolic link, junction, or mount point) - so
+    a junction can't create a traversal cycle back up the tree, or walk
+    the search outside the requested root. A directory that can't be
+    enumerated (e.g. access denied), a .mailbox/ that can't be read, a
+    linked .mailbox/ (itself a reparse point), and a cocopilot install
+    are recorded as discovery issues rather than silently skipped.
 
-    One target failing does not stop the others — every discoverable
+    One target failing does not stop the others - every discoverable
     target is attempted, and a summary is printed at the end. If ANY
     target (cleanup or discovery) failed, the script throws a summary
     error after every attempt has completed, so a partial cleanup can
@@ -64,7 +62,7 @@
 
 .PARAMETER Recurse
     Treat -RepoPath as a search root instead of a single target: find and
-    clean up every repository with a .mailbox/ directory at or below it.
+    clean up every cocopilot mailbox at or below it.
 
 .EXAMPLE
     .\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos\some-other-project
@@ -85,14 +83,18 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Expected non-zero git exits are read from $LASTEXITCODE, whatever the
+# caller's profile sets here.
+$PSNativeCommandUseErrorActionPreference = $false
+
+. (Join-Path $PSScriptRoot "_common.ps1")
 
 # This very file's own parent directory - i.e. wherever THIS cocopilot
 # install lives on disk, regardless of where it was cloned to. cocopilot's
 # own repo is never a valid cleanup target: its .mailbox/ intentionally
-# tracks the *.example.* templates init-mailbox.ps1 reads from, so "found
-# tracked files under .mailbox/" there is expected, not a bug to fix.
-# Checked below both for a direct single-target call and during -Recurse
-# discovery, the same way a reparse-point .mailbox is guarded in both places.
+# tracks the *.example.* templates init-mailbox.ps1 reads from. The
+# template check (Test-CocopilotTemplatesPresent) also catches the same
+# install reached through an alias path, where this string compare cannot.
 $script:CocopilotOwnRoot = (Split-Path -Parent $PSScriptRoot).TrimEnd('\', '/')
 
 function Test-IsCocopilotOwnRoot {
@@ -103,8 +105,8 @@ function Test-IsCocopilotOwnRoot {
 function Invoke-SingleMailboxCleanup {
     <#
     .SYNOPSIS
-        Removes .mailbox/ and its .gitignore rule from exactly one
-        already-resolved repository path — the single-target body of
+        Removes cocopilot's mailbox files and ignore rules from exactly one
+        already-resolved repository path - the single-target body of
         cleanup-mailbox.ps1, factored out so -Recurse can call it once
         per discovered repository.
 
@@ -120,11 +122,16 @@ function Invoke-SingleMailboxCleanup {
         [Parameter(Mandatory)][string]$RepoPath
     )
 
+    # Every refusal runs before the first change.
     if (Test-IsCocopilotOwnRoot -Path $RepoPath) {
         throw ("'$RepoPath' is cocopilot's own installed repo, not a project you were pairing on. " +
             "Its .mailbox/ intentionally tracks the *.example.* templates that init-mailbox.ps1 reads from " +
             "(see README.md/COLLABORATION.md) - cleaning up here would delete them. cd into the project " +
             "repo you actually paired on and re-run cocopilot-cleanup there instead.")
+    }
+    if (Test-CocopilotTemplatesPresent -RepoPath $RepoPath) {
+        throw ("'$RepoPath' holds cocopilot's *.example.* templates under .mailbox/ - it is a cocopilot install " +
+            "(possibly reached through an alias path), never a cleanup target.")
     }
 
     $mailboxDir = Join-Path $RepoPath ".mailbox"
@@ -137,72 +144,86 @@ function Invoke-SingleMailboxCleanup {
         $isGitRepo = ($LASTEXITCODE -eq 0)
     } catch { $isGitRepo = $false }
 
-    # 1. Un-track any .mailbox/ paths that ended up committed/staged. Should
-    # never happen given init-mailbox.ps1's own .gitignore rule, but checked
-    # defensively since the user must never get cocopilot state committed.
     if ($isGitRepo) {
-        $tracked = git -C $RepoPath ls-files -- .mailbox 2>$null
-        if ($tracked) {
-            Write-Warning "Found tracked files under .mailbox/ in $RepoPath - this should never happen, un-tracking now:"
-            $tracked | ForEach-Object { Write-Warning "  $_" }
-            if ($PSCmdlet.ShouldProcess("$RepoPath (.mailbox/ in git index)", "git rm -r --cached")) {
-                git -C $RepoPath rm -r --cached --ignore-unmatch -- .mailbox | Out-Null
-                Write-Host "Untracked .mailbox/ from the git index. This is staged for removal - commit it yourself to finalize." -ForegroundColor Yellow
-                $anyChangeMade = $true
-            }
+        $tracked = @(Get-CocopilotTrackedMailboxPaths -RepoPath $RepoPath)
+        if ($tracked.Count -gt 0) {
+            throw ("git tracks files under .mailbox/ in '$RepoPath' ($($tracked -join ', ')) - refusing to touch " +
+                "them. If they are cocopilot state committed by mistake, untrack them yourself " +
+                "(git rm -r --cached -- .mailbox), commit, then re-run cleanup.")
         }
     }
 
-    # 2. Delete .mailbox/ from disk. Refuse outright if .mailbox itself is a
-    # reparse point (symlink/junction/mount point): cocopilot never creates
-    # it that way, so a linked .mailbox means this repo is suspect, and
-    # -Recurse -Force must never be pointed at a link to an arbitrary,
-    # externally-controlled target.
-    if (Test-Path -LiteralPath $mailboxDir) {
+    $mailboxExists = Test-Path -LiteralPath $mailboxDir
+    if ($mailboxExists) {
+        # cocopilot never creates .mailbox/ as a link, so a linked .mailbox
+        # means this repo is suspect.
         if (([System.IO.File]::GetAttributes($mailboxDir)).HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
             throw "$mailboxDir is a reparse point (symlink/junction/mount point) - refusing to delete it. cocopilot never creates .mailbox/ this way; resolve this repository manually before retrying."
         }
-        if ($PSCmdlet.ShouldProcess($mailboxDir, "Remove directory")) {
-            Remove-Item -LiteralPath $mailboxDir -Recurse -Force
-            Write-Host "Removed $mailboxDir" -ForegroundColor Green
+        $state = Get-CocopilotMailboxState -Path $mailboxDir
+        if ($state.State -ne "Cocopilot") {
+            throw "$mailboxDir is not a cocopilot mailbox ($($state.State): $($state.Reason)) - nothing was changed."
+        }
+    }
+
+    # 1. Delete only the files cocopilot creates; keep the directory unless
+    # it is then empty.
+    if ($mailboxExists) {
+        $ours = @(Get-ChildItem -LiteralPath $mailboxDir -Force -File | Where-Object {
+                Test-CocopilotMailboxEntryName -Name $_.Name
+            })
+        if ($PSCmdlet.ShouldProcess($mailboxDir, "Remove cocopilot mailbox files ($($ours.Name -join ', '))")) {
+            foreach ($file in $ours) { Remove-Item -LiteralPath $file.FullName -Force }
             $anyChangeMade = $true
+            $leftovers = @(Get-ChildItem -LiteralPath $mailboxDir -Force)
+            if ($leftovers.Count -eq 0) {
+                Remove-Item -LiteralPath $mailboxDir -Force
+                Write-Host "Removed $mailboxDir" -ForegroundColor Green
+            } else {
+                Write-Warning "Removed cocopilot's files but kept $mailboxDir - it still holds entries cocopilot did not create: $($leftovers.Name -join ', ')"
+            }
         }
     } else {
         Write-Host "No .mailbox/ directory found at $RepoPath - nothing to remove." -ForegroundColor Cyan
     }
 
-    # 3. Strip exactly the cocopilot-added block from .gitignore, leaving
-    # everything else (including an unrelated bare .mailbox/ rule without our
-    # comment above it) untouched.
+    # 2. cocopilot's managed block in the git-local exclude file.
+    if ($isGitRepo -and (Remove-CocopilotMailboxExcludeRule -RepoPath $RepoPath)) {
+        Write-Host "Removed cocopilot's .mailbox/ rule from the repository's git exclude file." -ForegroundColor Green
+        $anyChangeMade = $true
+    }
+
+    # 3. The legacy block older init-mailbox.ps1 versions appended to the
+    # tracked .gitignore - removed exactly, everything else (including a
+    # bare .mailbox/ rule without cocopilot's comment) and the file's BOM
+    # state preserved.
     if (Test-Path -LiteralPath $gitignorePath) {
-        $raw = Get-Content -LiteralPath $gitignorePath -Raw
+        $gitignore = Read-CocopilotTextFile -Path $gitignorePath
         # [ \t\r]* (not \s*) around the .mailbox/ line: \s also matches \n, so a
         # greedy \s* there would silently swallow blank lines *beyond* the block
         # (e.g. a user-added blank line separating their own rules that follow).
-        # \r is kept (unlike \n) since Add-Content terminates its own appended
+        # \r is kept (unlike \n) since Add-Content terminated its own appended
         # text with the OS default newline (\r\n on Windows) even when the rest
         # of the file uses bare \n, so a lone trailing \r before the line's own
         # \n is still part of *this* line, not a signal to keep scanning.
         $pattern = '(?m)(\r?\n)?^#[ \t]*Per-machine cocopilot mailbox state.*$\r?\n^[ \t]*/?\.mailbox/?[ \t\r]*$\r?\n?'
-        $newRaw = [regex]::Replace($raw, $pattern, '')
+        $newRaw = [regex]::Replace($gitignore.Text, $pattern, '')
 
-        if ($newRaw -eq $raw) {
-            Write-Host "No cocopilot .mailbox/ rule found in $gitignorePath - nothing to change." -ForegroundColor Cyan
+        if ($newRaw -eq $gitignore.Text) {
+            Write-Host "No legacy cocopilot .mailbox/ rule found in $gitignorePath - nothing to change." -ForegroundColor Cyan
         } elseif ($newRaw.Trim().Length -eq 0) {
-            if ($PSCmdlet.ShouldProcess($gitignorePath, "Remove file (only contained cocopilot's rule)")) {
+            if ($PSCmdlet.ShouldProcess($gitignorePath, "Remove file (only contained cocopilot's legacy rule)")) {
                 Remove-Item -LiteralPath $gitignorePath -Force
-                Write-Host "Removed $gitignorePath (it only contained the rule cocopilot added)." -ForegroundColor Green
+                Write-Host "Removed $gitignorePath (it only contained the rule an older cocopilot added)." -ForegroundColor Green
                 $anyChangeMade = $true
             }
         } else {
-            if ($PSCmdlet.ShouldProcess($gitignorePath, "Remove cocopilot's .mailbox/ rule, keep the rest")) {
-                Set-Content -LiteralPath $gitignorePath -Value $newRaw -NoNewline -Encoding utf8
-                Write-Host "Removed cocopilot's .mailbox/ rule from $gitignorePath (rest of the file preserved)." -ForegroundColor Green
+            if ($PSCmdlet.ShouldProcess($gitignorePath, "Remove cocopilot's legacy .mailbox/ rule, keep the rest")) {
+                Write-CocopilotTextFile -Path $gitignorePath -Text $newRaw -HasBom $gitignore.HasBom
+                Write-Host "Removed cocopilot's legacy .mailbox/ rule from $gitignorePath (rest of the file preserved)." -ForegroundColor Green
                 $anyChangeMade = $true
             }
         }
-    } else {
-        Write-Host "No .gitignore found at $RepoPath - nothing to change." -ForegroundColor Cyan
     }
 
     # 4. Final safety check: show the target repo's git status so you can see
@@ -221,21 +242,24 @@ function Invoke-SingleMailboxCleanup {
 function Find-MailboxTarget {
     <#
     .SYNOPSIS
-        Recursively discovers every directory with a .mailbox/ child under
-        $RootPath (including $RootPath itself), for -Recurse.
+        Recursively discovers every cocopilot mailbox under $RootPath
+        (including $RootPath itself), for -Recurse.
 
     .DESCRIPTION
         Explicit-stack depth-first walk (not PowerShell call recursion), so
         depth is bounded by available memory, not call-stack size. Never
         descends into a directory named .git or node_modules, and never
-        follows a reparse point (symbolic link, junction, or mount point) —
+        follows a reparse point (symbolic link, junction, or mount point) -
         so a junction can't create a traversal cycle back up the tree, or
-        walk the search outside the requested root. A directory that can't
-        be enumerated, or whose attributes can't be read, is recorded as a
-        discovery failure rather than silently skipped. Children at each
-        level are visited in descending-sorted push order, so they pop (and
-        are processed) in ascending order — a deterministic left-to-right
-        preorder walk.
+        walk the search outside the requested root. Each .mailbox/ found is
+        classified: a cocopilot mailbox becomes a target; a readable one
+        that is not cocopilot's is skipped (reported, never touched); an
+        unreadable one, a linked one, and a cocopilot install are discovery
+        failures. A directory that can't be enumerated, or whose attributes
+        can't be read, is a discovery failure as well.
+        Children at each level are visited in descending-sorted push order,
+        so they pop (and are processed) in ascending order - a
+        deterministic left-to-right preorder walk.
     #>
     param(
         [Parameter(Mandatory)][string]$RootPath
@@ -244,6 +268,7 @@ function Find-MailboxTarget {
     $excludedNames = @(".git", "node_modules")
     $targets = [System.Collections.Generic.List[string]]::new()
     $failures = [System.Collections.Generic.List[pscustomobject]]::new()
+    $skipped = [System.Collections.Generic.List[pscustomobject]]::new()
 
     $stack = [System.Collections.Generic.Stack[string]]::new()
     $stack.Push($RootPath)
@@ -253,22 +278,24 @@ function Find-MailboxTarget {
 
         $mailboxCandidate = Join-Path $current ".mailbox"
         if (Test-Path -LiteralPath $mailboxCandidate -PathType Container) {
-            # cocopilot's own installed repo is never a valid cleanup target
-            # (see Test-IsCocopilotOwnRoot) - reject and report it as a
-            # discovery issue instead of a target, the same as a reparse-point
-            # .mailbox below, rather than letting it fail loudly mid-Recurse.
+            # A cocopilot install (by path, or by its templates when reached
+            # through an alias) is never a valid cleanup target - reported
+            # as a discovery issue rather than failing loudly mid-Recurse.
             if (Test-IsCocopilotOwnRoot -Path $current) {
                 $failures.Add([pscustomobject]@{
                     Path  = $mailboxCandidate
                     Error = "This is cocopilot's own installed repo - its .mailbox/ intentionally tracks the *.example.* templates and must never be treated as a cleanup target."
                 })
+            } elseif (Test-CocopilotTemplatesPresent -RepoPath $current) {
+                $failures.Add([pscustomobject]@{
+                    Path  = $mailboxCandidate
+                    Error = "This .mailbox/ holds cocopilot's *.example.* templates - a cocopilot install (possibly reached through an alias path), never a cleanup target."
+                })
             } else {
                 # A .mailbox that is itself a reparse point (symlink/junction/
                 # mount point) is never a valid cleanup target - cocopilot
-                # never creates it that way, and Invoke-SingleMailboxCleanup
-                # would otherwise be asked to -Recurse -Force delete through a
-                # link to an arbitrary, externally-controlled target. Reject
-                # and report it as a discovery issue instead of a target.
+                # never creates it that way. Reject and report it as a
+                # discovery issue instead of a target.
                 $mailboxAttrs = $null
                 try {
                     $mailboxAttrs = [System.IO.File]::GetAttributes($mailboxCandidate)
@@ -282,7 +309,14 @@ function Find-MailboxTarget {
                         Error = "'.mailbox' is a reparse point (symlink/junction/mount point) - refusing to treat it as a cleanup target."
                     })
                 } elseif ($null -ne $mailboxAttrs) {
-                    $targets.Add($current)
+                    $state = Get-CocopilotMailboxState -Path $mailboxCandidate
+                    switch ($state.State) {
+                        "Cocopilot" { $targets.Add($current) }
+                        "Foreign" { $skipped.Add([pscustomobject]@{ Path = $mailboxCandidate; Reason = $state.Reason }) }
+                        default {
+                            $failures.Add([pscustomobject]@{ Path = $mailboxCandidate; Error = "unreadable mailbox: $($state.Reason)" })
+                        }
+                    }
                 }
             }
         }
@@ -315,7 +349,7 @@ function Find-MailboxTarget {
         }
     }
 
-    return [pscustomobject]@{ Targets = $targets; Failures = $failures }
+    return [pscustomobject]@{ Targets = $targets; Failures = $failures; Skipped = $skipped }
 }
 
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
@@ -342,6 +376,7 @@ foreach ($target in $discovery.Targets) {
 
 $cleanupFailures = @($attempts | Where-Object { $null -ne $_.Error })
 $discoveryFailures = @($discovery.Failures)
+$skippedMailboxes = @($discovery.Skipped)
 $succeeded = @($attempts | Where-Object { $null -eq $_.Error })
 $actuallyChanged = @($succeeded | Where-Object { $_.Changed })
 $noOpSucceeded = @($succeeded | Where-Object { -not $_.Changed })
@@ -350,9 +385,14 @@ Write-Host "`n=== cocopilot-cleanup -Recurse summary ===" -ForegroundColor Cyan
 Write-Host "Mailboxes found:            $($discovery.Targets.Count)"
 Write-Host "Cleaned successfully:       $($actuallyChanged.Count)"
 Write-Host "No changes made (preview or declined confirmation): $($noOpSucceeded.Count)"
+Write-Host "Skipped (not a cocopilot mailbox): $($skippedMailboxes.Count)"
 Write-Host "Cleanup failures:           $($cleanupFailures.Count)"
-Write-Host "Discovery issues (unscannable directories + rejected reparse-point .mailbox candidates): $($discoveryFailures.Count)"
+Write-Host "Discovery issues (unscannable directories, unreadable or linked .mailbox candidates, cocopilot installs): $($discoveryFailures.Count)"
 
+if ($skippedMailboxes.Count -gt 0) {
+    Write-Host "`nSkipped, left untouched:" -ForegroundColor Yellow
+    $skippedMailboxes | ForEach-Object { Write-Host "  - $($_.Path): $($_.Reason)" -ForegroundColor Yellow }
+}
 if ($cleanupFailures.Count -gt 0) {
     Write-Host "`nCleanup failures:" -ForegroundColor Red
     $cleanupFailures | ForEach-Object { Write-Host "  - $($_.Path): $($_.Error)" -ForegroundColor Red }
@@ -361,7 +401,7 @@ if ($discoveryFailures.Count -gt 0) {
     Write-Host "`nDiscovery issues:" -ForegroundColor Red
     $discoveryFailures | ForEach-Object { Write-Host "  - $($_.Path): $($_.Error)" -ForegroundColor Red }
 }
-if ($discovery.Targets.Count -eq 0 -and $discoveryFailures.Count -eq 0) {
+if ($discovery.Targets.Count -eq 0 -and $discoveryFailures.Count -eq 0 -and $skippedMailboxes.Count -eq 0) {
     Write-Host "No cocopilot mailboxes found under $RepoPath." -ForegroundColor Cyan
 }
 

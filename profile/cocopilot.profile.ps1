@@ -26,6 +26,8 @@ function Initialize-CocopilotMailboxIfMissing {
         [switch]$AllowNonGit
     )
     $mailboxDir = Join-Path $RepoPath ".mailbox"
+    # Only the core files: a missing delivery cursor must stay missing, so
+    # that agent's first watch replays the log instead of skipping it.
     $required = @("implementer.json", "agent-a.md", "agent-b.md", "session.log.md") |
         ForEach-Object { Join-Path $mailboxDir $_ }
     if (@($required | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0) {
@@ -103,7 +105,17 @@ function cocopilot-prompt {
         [string]$ContextRoot,
         [switch]$AllowNonGit
     )
-    Initialize-CocopilotMailboxIfMissing -RepoPath $RepoPath -AllowNonGit:$AllowNonGit
+    if ($Agent -eq "verifier") {
+        # The verifier is read-only end to end: never initialize for it. It
+        # needs the ownership record and the pinned VERIFY_REQUEST.
+        $missing = @(@("implementer.json", "verify-request.md") |
+                Where-Object { -not (Test-Path -LiteralPath (Join-Path $RepoPath ".mailbox\$_")) })
+        if ($missing.Count -gt 0) {
+            throw "No pinned VERIFY_REQUEST at '$RepoPath' (missing: $($missing -join ', ')) - the active implementer posts one with write-lane.ps1 -VerifyRequest. Nothing was copied."
+        }
+    } else {
+        Initialize-CocopilotMailboxIfMissing -RepoPath $RepoPath -AllowNonGit:$AllowNonGit
+    }
     $extra = @{}
     if ($ContextRoot) { $extra.ContextRoot = $ContextRoot }
     $prompt = & (Join-Path $script:CocopilotRoot "scripts\render-prompt.ps1") -Agent $Agent -RepoPath $RepoPath @extra
@@ -112,7 +124,7 @@ function cocopilot-prompt {
 }
 
 function cocopilot-cleanup {
-    # Removes cocopilot's .mailbox/ directory and its .gitignore rule from
+    # Removes cocopilot's .mailbox/ files and ignore rule from
     # $RepoPath. Supports -WhatIf to preview. With -Recurse, treats
     # $RepoPath as a search root and cleans up every repository with a
     # .mailbox/ found at or below it (e.g. run in C:\Repos to clean every

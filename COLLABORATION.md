@@ -12,8 +12,8 @@
 > one **lane per agent** — `.mailbox/agent-a.md` and `.mailbox/agent-b.md`
 > (also git-ignored, each written ONLY by the agent it names, overwritten on
 > that agent's turns); every entry written to a lane is also appended to
-> `.mailbox/session.log.md`, the write-once session history (see "Mailbox
-> lanes and the session log" below).
+> `.mailbox/session.log.md`, the write-once session history and each agent's
+> inbox (see "Mailbox lanes and the session log" below).
 >
 > This is a direct port of a personal `collaboration.md` used for a
 > Claude Code + Codex pairing, generalized so it works for any two `copilot`
@@ -141,7 +141,8 @@ Navigator duties, on every wake:
 - Answer a `QUESTION` promptly with `ANSWER #n` — the driver is blocked on
   it. Rubber-ducking the driver is the navigator's highest-priority job;
   preparing review notes comes second.
-- Re-launch the watch command and stay in the loop.
+- Re-arm the watch with the `RE_ARM:` command it printed (acknowledging
+  what you handled) and stay in the loop.
 
 Interjection disagreements follow the standard rule: one focused evidence
 cycle, then unresolved material tradeoffs go to the user. A navigator STOP
@@ -156,22 +157,48 @@ while they were cheap to fix.
 
 ## Ownership handoff
 
-Ownership uses a monotonic epoch pinned to Git state, recorded in the mailbox
-ownership record.
+Ownership uses a monotonic epoch, recorded in the mailbox ownership record.
+Every change to that record goes through `scripts/handoff.ps1` (the session
+banner's **Handoff command**), which takes the ownership lock, checks the
+record's current state, and refuses — changing nothing — when the step does
+not fit it.
 
-1. The current implementer finishes or safely pauses, records
-   `HANDOFF_OFFER {epoch, from, to, head, dirty_manifest}` in its own
-   lane, updates `.mailbox/implementer.json` to `"state": "offered"`, and
-   then performs no writes.
-2. The peer verifies the exact HEAD and working-tree status (`git status`,
-   `git log -1`). A clean committed handoff is preferred; intentional dirty
-   state must be enumerated and preserved.
-3. The peer records `HANDOFF_ACCEPT {same epoch, head}` in its own lane
-   and updates `.mailbox/implementer.json` to
-   `"state": "active", "owner": <peer>`. Only then does the peer become
-   active and begin writing.
+The dirty manifest is computed, never hand-written. When an agent becomes
+the owner, the record stores a **baseline**: a snapshot of the target's
+state. The manifest is every difference between that baseline and the
+current state. For a git target, the state is its repository's HEAD, its
+staged changes, and every changed or untracked path with the SHA-256 of its
+current content — so even re-editing an already modified file changes it.
+Every repository nested inside it — untracked, inside an ignored directory,
+or a submodule — is captured the same way under its own path, so no change
+hides behind its parent's entry for the directory; a link is recorded,
+never followed. Ignored files, and the target's own `.mailbox/`, are not
+part of the state.
+
+1. The current implementer finishes or safely pauses, runs the handoff
+   command with `-Action Offer`, and posts the offer entry it prints in its
+   own lane: `HANDOFF_OFFER {epoch, from, to, head, dirty_manifest}`. The
+   record is now `"state": "offered"` at the same epoch N, with that
+   manifest. The implementer then performs no writes; it may withdraw the
+   offer with `-Action Cancel -Epoch N`, which keeps it the owner at epoch
+   N+1, so the old offer can never be accepted afterwards.
+2. The peer reviews the manifest and the actual diff. A clean committed
+   handoff is preferred; intentional dirty state must be enumerated and
+   preserved — the manifest does that.
+3. The peer runs the handoff command with
+   `-Action Accept -Epoch N -OwnerModel <its model>`. The script recomputes
+   HEAD and the manifest from the real tree and refuses on any difference
+   from the offer. On success it records a fresh baseline and makes the
+   peer `"state": "active"` owner at epoch N+1. The peer posts the
+   `HANDOFF_ACCEPT {same epoch, head}` entry it prints; only then does it
+   begin writing.
 4. There is no timeout takeover. If an owner disappears or state disagrees,
    stop; the user resolves ownership after the tree is inspected.
+
+Offer and Accept refuse while the state can only be partly captured: more
+than 20,000 changed or unversioned files or 512 MB to hash, or a directory
+that cannot be listed. A handoff never transfers authority on a manifest
+that cannot be proven complete.
 
 ### Non-git workspace roots
 
@@ -180,28 +207,16 @@ initialized via `init-mailbox.ps1 -AllowNonGit` — see "Workspace context"
 above for when this is the right call vs. `-ContextRoot`), `head` reads
 the fixed sentinel `non-git-root` instead of a SHA — distinct from the
 all-zero SHA, which still means "git repo, HEAD unresolved / no commits
-yet." `dirty_manifest` becomes the authoritative handoff anchor in this
-mode, and a `HANDOFF_OFFER` is invalid unless it is independently
-verifiable:
+yet." The dirty manifest is then the handoff anchor, and the state it
+compares covers the whole root:
 
-- One entry per Git worktree rooted anywhere below the workspace (not
-  just immediate children — workspaces commonly nest repos) that was
-  touched during the work unit, recording: its path relative to
-  `RepoPath`, its exact current HEAD (full SHA), and its exact
-  `git status --porcelain` output.
-- One entry per changed file outside any Git worktree, recording: its
-  path relative to `RepoPath`, and a content hash (e.g. SHA-256).
-- A compact structured manifest (e.g. one JSON object per entry) is
-  preferred where practical; an unambiguous, documented string format is
-  acceptable otherwise — either way the format must be fixed and
-  self-describing enough for the peer to parse back out.
-- Step 2's verification means: for every Git entry, independently run
-  `git status --porcelain` / `git rev-parse HEAD` in that worktree and
-  confirm an exact match; for every file entry, recompute the hash and
-  confirm an exact match. This replaces (not merely supplements) the
-  single-repo `git status`/`git log -1` check in step 2 above.
-- An empty or incomplete `dirty_manifest` on a non-git-root
-  `HANDOFF_OFFER` is invalid; the peer must reject it.
+- Every git worktree anywhere below the root — not just immediate
+  children; workspaces commonly nest repos, also inside each other — with
+  the same facts as a git target: HEAD, staged changes, and every changed
+  or untracked path with its content hash. A worktree that appears or
+  disappears is a difference too.
+- Every other file below the root, with its size and SHA-256. The root's
+  own `.mailbox/` is skipped; a link is recorded, never followed.
 
 Review revisions do not transfer ownership: the existing implementer remains
 active unless the explicit handoff completes.
@@ -294,12 +309,28 @@ history of the session; every entry an agent writes to its lane (THINKING /
 PROPOSAL / CHALLENGE / DESIGN_AGREED / SYNC / ACK / INTERJECT / QUESTION /
 ANSWER / STATUS / HANDOFF_OFFER / HANDOFF_ACCEPT / VERIFY_REQUEST / verdict
 block) is also appended to the log under a heading of the form
-`## <UTC timestamp> <role>`.
+`## <UTC timestamp> <role>` and closed by a
+`<!-- cocopilot:end <UTC timestamp> <role> -->` marker. An entry without
+its marker is incomplete: its writer stopped mid-append, or still runs an
+older cocopilot.
 
 Write order is fixed: append the log entry **first**, overwrite your own
-lane **last**. Each agent's watcher observes the peer's lane and the
-ownership record, so a peer woken by a lane change always finds the log
-entry already present. Log-only appends deliberately do not wake the peer.
+lane **last**.
+
+The log is also each agent's **inbox**. The watch command delivers every
+peer entry after that agent's cursor (`.mailbox/<role>.cursor`) at once,
+and otherwise waits for the next peer entry or for any change to the
+ownership record — including the agent's own handoff update. The cursor
+moves only when the agent acknowledges a delivery by re-arming with its
+`ACK_TOKEN` (the printed `RE_ARM:` command). An entry written while the
+agent is busy is therefore delivered on its next watch, and an
+unacknowledged delivery is delivered again. Without a cursor file, the
+watch delivers the whole log from its start. Counting history as handled
+without delivering it is a person's decision, never an agent's:
+`init-mailbox.ps1 -AcknowledgeHistory`. Entries labelled `LEGACY`
+(written before cocopilot added end markers), `INCOMPLETE` or `FRAGMENT`
+are not proven complete: treat their content as unverified, and ask the
+peer to re-post anything that looks cut off.
 
 The preferred way to post a lane entry is the session banner's own **Lane
 write command** — `scripts/write-lane.ps1 -RepoPath <repo> -Role <your
@@ -316,7 +347,9 @@ either valid value, so it cannot turn a wrong-but-valid `-Role` into an
 error — that would need a separate, not-yet-built identity mechanism.
 Lane identity vs. driver/navigator responsibility (above) is the
 discipline that prevents that mistake in the first place. It performs
-exactly the write order above (log first, lane last), retries only a
+exactly the write order above (log first, lane last), refuses a turn line
+that a reader could take for a heading or an end marker, appends under an
+exclusive handle so no reader sees a half-written entry, retries only a
 genuine sharing violation, and never repeats the log append once it has
 already succeeded.
 
@@ -325,10 +358,13 @@ The write operation is fixed too: both agents must produce identical UTF-8
 below is the documented **emergency fallback** for when the script itself
 is unavailable or broken — never `Add-Content`, `Set-Content`, or `>>`
 redirection, whose encoding and newline output depend on cmdlet defaults
-that a profile or `$PSDefaultParameterValues` can change:
+that a profile or `$PSDefaultParameterValues` can change. Keep `$turn`
+free of heading-shaped and end-marker lines:
 
 ```powershell
 $utf8 = [System.Text.UTF8Encoding]::new($false)
+$stamp = [DateTime]::UtcNow.ToString("yyyy-MM-dd HH:mm:ss'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
+$entry = "`n## $stamp $role`n$turn`n<!-- cocopilot:end $stamp $role -->`n"
 [System.IO.File]::AppendAllText($sessionLogPath, $entry, $utf8)  # 1: log first
 [System.IO.File]::WriteAllText($myLanePath, $turn, $utf8)        # 2: own lane last
 ```
@@ -343,7 +379,7 @@ retry for you.
 Never edit or delete existing log content. `init-mailbox.ps1 -Force` resets
 the lanes and ownership record but preserves an existing log,
 appending a session-reset entry instead; the log is only ever removed by
-`cleanup-mailbox.ps1`, which deletes the whole `.mailbox/` directory.
+`cleanup-mailbox.ps1`, which deletes cocopilot's mailbox files.
 
 ## Verification and handoff evidence
 
@@ -362,27 +398,28 @@ indefinitely.
 ### Fresh-eyes verification
 
 Recommended before declaring a risky or final work unit complete; skippable
-for trivial ones. The implementer writes a `VERIFY_REQUEST` to its own
-lane (following the log-first rule like any entry)
-containing: the acceptance criteria, how to run the checks, the `WORK_UNIT`
-slug, and the exact `ROUND: <n>/<max>` value the verifier must emit — the
-next review-attempt ordinal. The verifier may not read the session log and
-earlier lane turns are overwritten, so it is handed everything and
-derives nothing.
+for trivial ones. The implementer posts a `VERIFY_REQUEST` with the lane
+write command plus `-VerifyRequest` (following the log-first rule like any
+entry), containing: the acceptance criteria, how to run the checks, the
+`WORK_UNIT` slug, and the exact `ROUND: <n>/<max>` value the verifier must
+emit — the next review-attempt ordinal. The script also pins the request to
+`.mailbox/verify-request.md`, stamped with its author and the ownership
+epoch, where later turns cannot overwrite it; only the active implementer
+can pin one. The verifier may not read the session log or the lanes, so it
+is handed everything and derives nothing.
 
 The user (or the peer, via `render-prompt.ps1 -Agent verifier`) opens a
 **new** copilot session with the verifier prompt. Fresh context is the
-point: the verifier reads only the repository, the diff, the
-VERIFY_REQUEST in the active implementer's lane (owner per
-`implementer.json`), and this protocol's "Closing a review" section
-(solely for the canonical verdict-block format) — explicitly not
-`session.log.md` and not the other agent's lane. It is read-only end to
-end (no file writes of any kind,
-including untracked/generated files; no init; its banner contains no
-mutating commands),
-stops immediately if the mailbox or the VERIFY_REQUEST is missing, and
-emits the verdict block as its final output, carrying the given `WORK_UNIT`
-and `ROUND` unchanged whether it agrees or revises.
+point: the verifier reads only the repository, the diff, the pinned
+`verify-request.md`, `implementer.json` (solely to confirm that the
+request's author is the active implementer at the recorded epoch), and
+this protocol's "Closing a review" section (solely for the canonical
+verdict-block format) — explicitly not `session.log.md` and not either
+lane. It is read-only end to end (no file writes of any kind, including
+untracked/generated files; no init; its banner contains no mutating
+commands), stops immediately if the pinned request is missing or stale,
+and emits the verdict block as its final output, carrying the given
+`WORK_UNIT` and `ROUND` unchanged whether it agrees or revises.
 
 The active implementer transcribes that block verbatim into its own lane
 and the session log, attributed as fresh-verifier
@@ -392,14 +429,16 @@ ordinal escalates to the user per the round rules.
 
 ## Ownership record format
 
-The durable ownership authority is `.mailbox/implementer.json` (git-ignored,
-replaced whole-file via same-directory temp-file rename — crash-safe against
-torn writes; concurrent last-writer-wins races remain humanly resolved via
-the epoch rule), not the lane prose (which is overwritten each
-turn). Every update to it is a whole-file replacement through the
-`Write-MailboxJson` helper in cocopilot's `scripts\_common.ps1` — the
-session banner gives the resolved, ready-to-run command. Never edit the
-file in place with any other tool. Shape:
+The durable ownership authority is `.mailbox/implementer.json` (git-ignored),
+not the lane prose, which is overwritten each turn. It is replaced whole
+through a same-directory temp file and a rename, so a reader sees the old
+or the new record, never a missing or partial one; nothing is claimed about
+power loss. Every change goes through `scripts/handoff.ps1` (or
+`init-mailbox.ps1`), which holds the ownership lock
+(`.mailbox/implementer.lock`) from reading the record to replacing it, so
+two updates never interleave. The lock file is removed on release; one
+left behind by a crashed process holds nothing and is reused by the next
+update. Never edit the file with any other tool. Shape:
 
 ```json
 {
@@ -410,21 +449,28 @@ file in place with any other tool. Shape:
   "from": null,
   "to": null,
   "head": "<git HEAD>",
-  "dirty_manifest": []
+  "dirty_manifest": [],
+  "baseline": { "id": "<32 hex>", "sha256": "<64 hex>" }
 }
 ```
 
-- `epoch` is monotonic across the run; each `HANDOFF_ACCEPT` names the exact
-  prior epoch it supersedes, so a stale or replayed offer cannot be accepted
-  out of order.
-- `state` is `active` in steady state; during a handoff the outgoing owner
-  writes `offered` only after it has stopped writing, and the incoming owner
-  writes `active` only after validating `head` and working-tree status.
+- `epoch` is monotonic across the run. An offer keeps epoch N; the accept
+  that takes it, or a cancel that withdraws it, writes N+1, so a stale or
+  replayed offer can never be accepted. `init-mailbox.ps1 -Force` raises
+  the epoch by one as well.
+- `state` is `active` in steady state and `offered` while a handoff is
+  open; `from` and `to` name the offering and receiving role then.
 - `owner` is a stable role id (`agent-a` / `agent-b`); `owner_model` is
   informational only (which model that role happens to be running right
   now) and may change across sessions without bumping the epoch.
+- `dirty_manifest` holds the open offer's manifest: one
+  `{ "fact", "before", "after" }` entry per difference from the baseline,
+  where `null` means absent on that side.
+- `baseline` references the immutable `.mailbox/baseline-<id>.json`
+  snapshot taken when this ownership began, with its SHA-256. The record is
+  the only commit point: a baseline file written for an update that never
+  committed is simply unreferenced. Only
+  `init-mailbox.ps1 -AcknowledgeHistory` gives a record from an older
+  cocopilot its first baseline; until then, handoffs are refused.
 - There is no lease expiry. A vanished owner is resolved by the user after
   the tree is inspected.
-
-Full handoff automation is deferred until role rotation is first piloted;
-until then the record simply names the current active implementer.

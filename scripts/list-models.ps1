@@ -1,4 +1,5 @@
 #Requires -Version 7.4
+
 <#
 .SYNOPSIS
     Lists Copilot models available to the current account and their launch
@@ -7,7 +8,10 @@
 .DESCRIPTION
     Queries the model catalog exposed by the SDK bundled with the installed
     Copilot CLI, including supported reasoning efforts, context tiers/token
-    limits, category, and price category.
+    limits, category, and price category. The CLI is the first `copilot`
+    native executable or PowerShell script on PATH; a same-name alias or
+    function is never used, a cmd shim (.cmd/.bat) is skipped with a
+    warning, and a missing CLI is an error.
 
     If account-aware discovery is unavailable (for example, Node.js is not on
     PATH), falls back to the model IDs advertised by `copilot completion bash`
@@ -30,7 +34,7 @@ $ErrorActionPreference = "Stop"
 
 . (Join-Path $PSScriptRoot "_models.ps1")
 
-$catalog = @(Get-CocopilotModelCatalog -NoFallback:$NoFallback)
+$catalog = @(Get-CocopilotModelCatalog -CopilotCommand (Resolve-CocopilotCommand) -NoFallback:$NoFallback)
 if ($Raw) {
     $catalog
     return

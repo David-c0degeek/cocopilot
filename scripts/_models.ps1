@@ -107,6 +107,41 @@ function ConvertTo-CocopilotModelDescriptor {
     }
 }
 
+function Resolve-CocopilotCommand {
+    <#
+    .SYNOPSIS
+        Returns the full path of the stock `copilot` CLI: the first native
+        executable or PowerShell script named copilot on PATH, in the order
+        PowerShell itself would run them.
+
+    .DESCRIPTION
+        A same-name alias or function from a profile never matches. Only a
+        native executable (.exe, .com) or a PowerShell script can carry the
+        multi-line agent prompt intact: a cmd.exe shim (.cmd, .bat) gets
+        Legacy argument passing and ends the command line at the prompt's
+        first line break, and npm's extensionless sh shim cannot be started
+        at all. A skipped cmd shim is reported as a warning. A missing CLI
+        throws instead of returning a bare `copilot`, which such a function
+        could still capture.
+    #>
+    $skippedShims = [System.Collections.Generic.List[string]]::new()
+    foreach ($command in @(Get-Command copilot -CommandType Application, ExternalScript -ErrorAction SilentlyContinue)) {
+        $extension = [System.IO.Path]::GetExtension($command.Source)
+        if ($command.CommandType -eq "ExternalScript" -or $extension -in @(".exe", ".com")) {
+            if ($skippedShims.Count -gt 0) {
+                Write-Warning "Skipping $($skippedShims -join ', '): a cmd.exe shim cannot pass the multi-line agent prompt intact. Using '$($command.Source)'."
+            }
+            return [string]$command.Source
+        }
+        if ($extension -in @(".cmd", ".bat")) { $skippedShims.Add([string]$command.Source) }
+    }
+
+    $shimNote = if ($skippedShims.Count -gt 0) {
+        " Found only $($skippedShims -join ', '), which cannot pass the multi-line agent prompt intact."
+    } else { "" }
+    throw "The GitHub Copilot CLI ('copilot') was not found on PATH as a native executable or PowerShell script.$shimNote Install it or add it to PATH; a same-name alias or function is never used."
+}
+
 function Get-CocopilotCliVersion {
     param([string]$CopilotCommand = "copilot")
 
@@ -330,7 +365,7 @@ function Get-CocopilotAdvertisedModelCatalog {
 
 function Get-CocopilotModelCatalog {
     param(
-        [string]$CopilotCommand = "copilot",
+        [Parameter(Mandatory)][string]$CopilotCommand,
         [switch]$NoFallback
     )
 
@@ -456,6 +491,25 @@ function Read-CocopilotOptionalSetting {
     }
 }
 
+function Get-CocopilotStrongestEffort {
+    <#
+    .SYNOPSIS
+        The strongest known effort among a model's supported values, by the
+        fixed ranking max > xhigh > high > medium > low > minimal > none -
+        independent of the SDK's array order and its default. Values outside
+        the ranking are returned separately, so a caller can show them rather
+        than guess where they rank.
+    #>
+    param([string[]]$SupportedEfforts)
+
+    $ranking = @("max", "xhigh", "high", "medium", "low", "minimal", "none")
+    $supported = @($SupportedEfforts | Where-Object { $_ })
+    return [pscustomobject]@{
+        Strongest = $ranking | Where-Object { $_ -in $supported } | Select-Object -First 1
+        Unknown   = @($supported | Where-Object { $_ -notin $ranking })
+    }
+}
+
 function Resolve-CocopilotAgentModelConfiguration {
     param(
         [Parameter(Mandatory)]$Model,
@@ -483,11 +537,12 @@ function Resolve-CocopilotAgentModelConfiguration {
     if ($PromptForSettings -and -not $isAuto) {
         if (-not $effort) {
             if ($Model.HasCapabilityMetadata -and $supportedEfforts.Count -gt 0) {
-                $defaultEffort = $Model.DefaultEffort
-                if (-not $defaultEffort) {
-                    $defaultEffort = if ("max" -in $supportedEfforts) { "max" } else { $supportedEfforts[-1] }
+                $ranked = Get-CocopilotStrongestEffort -SupportedEfforts $supportedEfforts
+                if ($ranked.Unknown.Count -gt 0) {
+                    $defaultNote = if ($ranked.Strongest) { "the default is the strongest known value, '$($ranked.Strongest)'" } else { "no default is preselected" }
+                    Write-Warning "$($RoleLabel): model '$($Model.Id)' also advertises effort values cocopilot cannot rank ($($ranked.Unknown -join ', ')); $defaultNote."
                 }
-                $effort = Read-CocopilotOptionalSetting -Prompt "$RoleLabel effort" -Choices $supportedEfforts -DefaultValue $defaultEffort
+                $effort = Read-CocopilotOptionalSetting -Prompt "$RoleLabel effort" -Choices $supportedEfforts -DefaultValue $ranked.Strongest
             } elseif (-not $Model.HasCapabilityMetadata) {
                 $effort = Read-CocopilotOptionalSetting -Prompt "$RoleLabel effort" `
                     -Choices @("none", "minimal", "low", "medium", "high", "xhigh", "max")

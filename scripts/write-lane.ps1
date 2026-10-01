@@ -1,4 +1,5 @@
 #Requires -Version 7.4
+
 <#
 .SYNOPSIS
     Writes one mailbox lane entry: appends it to the write-once session
@@ -24,29 +25,30 @@
     COLLABORATION.md "Mailbox lanes and the session log".
 
     Never accepts an arbitrary destination path or a pre-built log entry
-    (with its own timestamp/heading) — only the raw turn body via -Turn.
-    The UTC "## <timestamp> <role>" log heading is generated here, once,
-    so every entry's heading is byte-for-byte consistent regardless of
-    which agent or host wrote it. -Turn's content is otherwise preserved
-    exactly in the lane file (no forced trailing newline is added on top
-    of what the caller supplied); the log entry gets exactly one
-    separating newline before whatever follows, whether or not -Turn
-    already ended in one — never two.
+    — only the raw turn body via -Turn. The log entry is framed here:
+    the UTC "## <timestamp> <role>" heading (invariant culture), the body,
+    exactly one line break, and a "<!-- cocopilot:end <timestamp> <role> -->"
+    marker. A reader treats an entry without its marker as incomplete, so
+    an interrupted append can never pass for a whole entry. A -Turn line
+    that a reader could take for a heading or an end marker is refused
+    before anything is written: it would forge an entry or a boundary.
+    -Turn is otherwise written to the lane exactly as given.
 
     Write order is fixed and cannot be reordered by the caller:
-      1. Append the heading + turn body to session.log.md (retried on a
-         sharing violation — the peer may be appending at the same
-         moment).
-      2. Only once that succeeds, overwrite <Role>.md with the turn body
-         (retried separately — a sharing violation here must NOT re-run
-         step 1, which would duplicate the log entry).
-    Only a genuine sharing violation ([System.IO.IOException]) is
-    retried; any other error propagates immediately. A failure surfaces
-    as a thrown error — it is never silently reported as success, and
-    step 1 is never repeated once it has already succeeded.
-
-    Both writes use UTF-8 without a BOM via .NET, independent of cmdlet
-    encoding defaults.
+      1. Append the framed entry to session.log.md under an exclusive
+         handle, so no reader sees it half-written and two writers never
+         interleave. Only opening the log is retried, and only on a
+         sharing violation (the peer or a reader holds it for a moment).
+      2. With -VerifyRequest, pin the turn to .mailbox/verify-request.md,
+         where the fresh-eyes verifier reads it (see COLLABORATION.md
+         "Fresh-eyes verification").
+      3. Only then overwrite <Role>.md with the turn body, replaced whole
+         (temp file + rename), so a reader never sees it missing or
+         partly written.
+    A failure surfaces as a thrown error — never as silent success — and
+    step 1 is never repeated once it has succeeded, so an entry is never
+    duplicated. Every write is UTF-8 without a BOM via .NET, independent
+    of cmdlet encoding defaults.
 
 .PARAMETER RepoPath
     The repository being paired on (its .mailbox/ holds the log + lanes).
@@ -67,13 +69,20 @@
     Written to the lane file exactly as given (a trailing newline is
     neither required nor added).
 
+.PARAMETER VerifyRequest
+    Also pins this turn as the current VERIFY_REQUEST in the mailbox's
+    verify-request.md, stamped with the author and the ownership epoch.
+    Only the active implementer may pin one, and the turn must start with
+    "VERIFY_REQUEST".
+
 .EXAMPLE
     & .\scripts\write-lane.ps1 -RepoPath C:\Repos\your-project -Role agent-a -Turn $turn
 #>
 param(
     [Parameter(Mandatory)][string]$RepoPath,
     [Parameter(Mandatory)][ValidateSet("agent-a", "agent-b")][string]$Role,
-    [Parameter(Mandatory)][string]$Turn
+    [Parameter(Mandatory)][string]$Turn,
+    [switch]$VerifyRequest
 )
 
 $ErrorActionPreference = "Stop"
@@ -82,10 +91,14 @@ $ErrorActionPreference = "Stop"
 
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
 $initMailboxScript = Join-Path $PSScriptRoot "init-mailbox.ps1"
-$sessionLogPath = Join-Path $RepoPath ".mailbox\session.log.md"
-$lanePath = Join-Path $RepoPath ".mailbox\$Role.md"
+$mailboxDir = Join-Path $RepoPath ".mailbox"
+$sessionLogPath = Join-Path $mailboxDir "session.log.md"
+$lanePath = Join-Path $mailboxDir "$Role.md"
+$implementerPath = Join-Path $mailboxDir "implementer.json"
+$verifyRequestPath = Join-Path $mailboxDir "verify-request.md"
 
-foreach ($p in @($sessionLogPath, $lanePath)) {
+$requiredPaths = @($sessionLogPath, $lanePath) + $(if ($VerifyRequest) { @($implementerPath) } else { @() })
+foreach ($p in $requiredPaths) {
     if (-not (Test-Path -LiteralPath $p)) {
         # Lazy: only shells out to git (via Get-CocopilotInitCommand) on
         # this exceptional path, not on every ordinary write-lane.ps1 call.
@@ -94,34 +107,36 @@ foreach ($p in @($sessionLogPath, $lanePath)) {
     }
 }
 
-$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-$nowUtc = [DateTime]::UtcNow.ToString("yyyy-MM-dd HH:mm:ss'Z'")
-# Exactly one separating newline after $Turn in the log, regardless of
-# whether $Turn already ends in one - never a doubled blank line.
-$logSeparator = if ($Turn.EndsWith("`n")) { "" } else { "`n" }
-$logEntry = "`n## $nowUtc $Role`n$Turn$logSeparator"
-
-$maxAttempts = 5
-for ($i = 0; $i -lt $maxAttempts; $i++) {
-    try {
-        [System.IO.File]::AppendAllText($sessionLogPath, $logEntry, $utf8NoBom)
-        break
-    } catch [System.IO.IOException] {
-        if ($i -eq $maxAttempts - 1) { throw }
-        Start-Sleep -Seconds 1
-    }
+# Every refusal runs before the first write.
+$forbiddenLine = Get-CocopilotForbiddenBodyLine -Body $Turn
+if ($null -ne $forbiddenLine) {
+    throw "-Turn contains a line a log reader would take for an entry heading or an end marker: '$forbiddenLine'. Indent or rephrase that line; nothing was written."
+}
+if ($VerifyRequest -and $Turn -notmatch '^\s*VERIFY_REQUEST\b') {
+    throw "-VerifyRequest pins a VERIFY_REQUEST, but -Turn does not start with 'VERIFY_REQUEST'; nothing was written."
 }
 
-# The log entry is now durable - a sharing violation on the lane overwrite
-# below retries ONLY this step, never step 1 above (re-running it would
-# duplicate the log entry for one logical turn). $Turn is written exactly
-# as given - no forced trailing newline on top of it.
-for ($i = 0; $i -lt $maxAttempts; $i++) {
+$stamp = Get-CocopilotUtcStamp
+$entryText = New-CocopilotLogEntryText -Stamp $stamp -Role $Role -Body $Turn
+if ($VerifyRequest) {
+    # Under the ownership lock, no handoff can change the owner or the epoch
+    # between the owner check, the log entry and the pinned request.
+    $lock = Enter-CocopilotOwnershipLock -MailboxDir $mailboxDir
     try {
-        [System.IO.File]::WriteAllText($lanePath, $Turn, $utf8NoBom)
-        return
-    } catch [System.IO.IOException] {
-        if ($i -eq $maxAttempts - 1) { throw }
-        Start-Sleep -Seconds 1
+        $record = Read-CocopilotSharedText -Path $implementerPath | ConvertFrom-Json
+        if ($record.state -ne "active" -or $record.owner -ne $Role) {
+            throw "Only the active implementer pins a VERIFY_REQUEST; implementer.json names owner '$($record.owner)' in state '$($record.state)', not an active '$Role'. Nothing was written."
+        }
+        Add-CocopilotLogText -Path $sessionLogPath -Text $entryText
+        $pinned = "# VERIFY_REQUEST (pinned by write-lane.ps1 -VerifyRequest; the fresh-eyes verifier reads it)`n" +
+            "- author: $Role`n- epoch: $($record.epoch)`n- posted: $stamp`n`n$Turn"
+        Write-CocopilotFileAtomic -Path $verifyRequestPath -Text $pinned
+    } finally {
+        $lock.Dispose()
     }
+} else {
+    Add-CocopilotLogText -Path $sessionLogPath -Text $entryText
 }
+
+# The log entry is written - nothing below may repeat it.
+Write-CocopilotFileAtomic -Path $lanePath -Text $Turn
