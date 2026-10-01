@@ -349,9 +349,11 @@ Lane identity vs. driver/navigator responsibility (above) is the
 discipline that prevents that mistake in the first place. It performs
 exactly the write order above (log first, lane last), refuses a turn line
 that a reader could take for a heading or an end marker, appends under an
-exclusive handle so no reader sees a half-written entry, retries only a
-genuine sharing violation, and never repeats the log append once it has
-already succeeded.
+exclusive handle so no reader sees a half-written entry, and never repeats
+the log append once it has already succeeded. It retries the log append
+only on a sharing violation. It retries the lane replace on a sharing
+violation or an access-denied rename, for a few seconds, and then reports
+the error.
 
 The write operation is fixed too: both agents must produce identical UTF-8
 (no BOM) bytes. `write-lane.ps1` already guarantees this; the recipe
@@ -469,8 +471,11 @@ update. Never edit the file with any other tool. Shape:
 - `baseline` references the immutable `.mailbox/baseline-<id>.json`
   snapshot taken when this ownership began, with its SHA-256. The record is
   the only commit point: a baseline file written for an update that never
-  committed is simply unreferenced. Only
-  `init-mailbox.ps1 -AcknowledgeHistory` gives a record from an older
-  cocopilot its first baseline; until then, handoffs are refused.
+  committed is simply unreferenced. Outside a handoff, a baseline is taken
+  from the current state only for a new mailbox or by
+  `init-mailbox.ps1 -AcknowledgeHistory`, which refuses while an offer is
+  open unless combined with `-Force`. `-Force` keeps the baseline of the
+  record it replaces. A record without a baseline, also a recreated one,
+  keeps none, and handoffs are refused until then.
 - There is no lease expiry. A vanished owner is resolved by the user after
   the tree is inspected.

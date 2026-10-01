@@ -189,14 +189,19 @@ Refuses before changing anything when `-RepoPath` is a cocopilot install: its ow
 | `-RepoPath`           | current dir | Target repository                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `-Owner`              | `agent-a`   | Which role starts as implementer: `agent-a` or `agent-b`                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `-OwnerModel`         | `unknown`   | Informational label for the owner's model                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `-Force`              | off         | Reset record + lanes; the epoch rises by one. **The session log is preserved** (a reset entry is appended)                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `-AcknowledgeHistory` | off         | Count everything so far as handled: both delivery cursors move to the log's current end (also a cursor that exists), and a record without a baseline gets the current state as its first one. Use it only when every entry so far is handled, with no STOP or QUESTION still pending                                                                                                                                                                                                                       |
+| `-Force`              | off         | Reset record + lanes; the epoch rises by one and the handoff baseline is kept. **The session log is preserved** (a reset entry is appended)                                                                                                                                                                                                                                                                                                                                                                |
+| `-AcknowledgeHistory` | off         | Count everything so far as handled: both delivery cursors move to the log's current end (also a cursor that exists), and the current state becomes the handoff baseline (replacing an existing one). Refused while a handoff offer is open, unless combined with `-Force`. Use it only when every entry so far is handled, with no STOP or QUESTION still pending                                                                                                                                          |
 | `-AllowNonGit`        | off         | Pair directly on a workspace root that isn't itself a git repo (e.g. `C:\Repos` containing several independent repos as children) — `head` then reads the fixed sentinel `non-git-root`, and handoffs compare every git worktree below the root plus every other file (see `COLLABORATION.md` "Ownership handoff" → "Non-git workspace roots"). If you only need read-only cross-repo context while writing to just ONE child repo, `-ContextRoot` on `start-agents.ps1` is the lighter-weight alternative |
 
-Safe to re-run: existing files are left alone without `-Force`, and a missing lane, record or log is recreated.
-Re-running never counts existing history as handled on its own: a missing cursor stays missing, so the first watch of
-that agent replays the whole log, and a record without a baseline keeps none, so handoffs stay refused. Upgrading a
-mailbox from an older cocopilot is therefore an explicit step: stop both agents, then run init with
+Safe to re-run: existing files are left alone without `-Force`, and a missing lane, record or log is recreated. Delivery
+cursors and the handoff baseline are taken from the current state only for a new mailbox or with `-AcknowledgeHistory`.
+Re-running, `-Force` and a recreated record never count existing history as handled on their own:
+
+- A missing cursor stays missing, so the first watch of that agent replays the whole log.
+- `-Force` keeps the baseline of the record it replaces.
+- A record without a baseline, also a recreated one, keeps none, so handoffs stay refused.
+
+Upgrading a mailbox from an older cocopilot is therefore an explicit step: stop both agents, then run init with
 `-AcknowledgeHistory`, only when every entry so far is handled. Nothing in cocopilot passes that switch for you.
 `start-agents.ps1` and `cocopilot-start` warn about a missing cursor and start both agents.
 
@@ -406,8 +411,8 @@ Full text: [`COLLABORATION.md`](COLLABORATION.md) — the binding agreement both
 6. **Rounds are counted and capped** (`ROUND: n/3`). A `REVISE` at the cap stops further revisions — both agents hand
    you the open options and consequences; an unresolved material tradeoff can escalate to you even earlier.
 7. **Every lane entry is logged first** to the append-only session log — the full history survives even a `-Force`
-   re-init, and `grep '^VERDICT:'` finds every review outcome of a session (a verdict quoted inside another entry
-   matches too).
+   re-init. `grep '^VERDICT:'` lists the candidate verdict lines of a session, not a count of reviews: a verdict quoted
+   or transcribed inside another entry matches too, so read each match before you count.
 8. **Fresh-eyes verification** for risky/final work: a new session, read-only, sees only repo + diff + request.
    Skippable for trivial changes.
 9. **Evidence beats identity.** Repository facts outrank confidence, verbosity, or persistence — for both models.
@@ -445,7 +450,7 @@ scripts/
   render-prompt.ps1           print a role prompt for manual paste
   cleanup-mailbox.ps1         remove cocopilot's footprint from a target
 tests/
-  Cocopilot.Tests.ps1         Pester 5 suite (199 tests, pwsh 7.4+)
+  Cocopilot.Tests.ps1         Pester 5 suite (215 tests, pwsh 7.4+)
 ```
 
 The real `.mailbox/` state is created **inside each target repo** (git-ignored there); cocopilot's own repo only tracks
@@ -453,14 +458,15 @@ the two `*.example.*` templates.
 
 ## Tests
 
-207 black-box Pester 5 tests cover init, git-local ignore rules (including non-ASCII paths under an OEM console code
+215 black-box Pester 5 tests cover init, git-local ignore rules (including non-ASCII paths under an OEM console code
 page), watcher wake/no-wake behavior, lossless log delivery
 (cursors, acknowledgement tokens, redelivery, labelled legacy and incomplete entries, multi-byte offsets), framed and
 exclusive log appends under concurrent writers and readers, whole-file replacement that concurrent readers never see
 missing or partial, culture-independent timestamps, the pinned `VERIFY_REQUEST`, ownership handoffs (computed
-manifests including nested repositories, baselines, epochs, the ownership lock, concurrent accepts, partial-capture
-refusal), own-lane writes and append-only logging, safe cleanup (single and recursive, foreign-mailbox and
-cocopilot-install protection), shared role-template rendering for every role, non-git workspace recovery,
+manifests including nested repositories, baselines kept across `-Force` and replaced only by `-AcknowledgeHistory`,
+epochs, the ownership lock, concurrent accepts, partial-capture refusal), own-lane writes and append-only logging, safe
+cleanup (single and recursive, foreign-mailbox and cocopilot-install protection), shared role-template rendering for
+every role, non-git workspace recovery,
 unacknowledged history that no launch, mailbox repair or re-run of init skips (a pending peer STOP is still delivered;
 only `-AcknowledgeHistory` counts history as handled), the launch-time warning for a mailbox without delivery cursors,
 session-name/window-title helpers, Windows Terminal command-line quoting, the PowerShell 7.4 requirement and native

@@ -183,6 +183,18 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         $LASTEXITCODE | Should -Be 0
     }
 
+    It "names a tracked non-ASCII path under .mailbox/ exactly in its refusal under an OEM console code page" {
+        $t = New-FakeTarget "init-oem-tracked"
+        git -C $t config core.quotePath false
+        $name = "caf" + [char]0x00E9 + ".txt"
+        New-Item -ItemType Directory -Force -Path (Join-Path $t ".mailbox") | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $t ".mailbox\$name"), "x", $script:utf8NoBom)
+        git -C $t add -- ".mailbox/$name" 2>$null | Out-Null
+        Invoke-WithConsoleCodePage -CodePage 850 -ScriptBlock {
+            { & $script:initScript -RepoPath $t *>$null } | Should -Throw ("*git tracks files under .mailbox/*.mailbox/" + $name + "*")
+        }
+    }
+
     It "adds no rule when the user's own rule already ignores .mailbox/" {
         $t = New-FakeTarget "init-user-rule"
         [System.IO.File]::WriteAllText((Join-Path $t ".gitignore"), ".mailbox/`n", $script:utf8NoBom)
@@ -1075,6 +1087,114 @@ Describe "handoff.ps1 and handoff baselines" {
         Invoke-Handoff -RepoPath $t -Role agent-a -Action Offer | Out-Null
         (Get-Content -Raw $recordPath | ConvertFrom-Json).state | Should -Be "offered"
     }
+
+    It "keeps the baseline across init -Force, so a change made before the reset stays in the next offer" {
+        $t = New-CommittedTarget "init-force-keeps-baseline"
+        $mailbox = Join-Path $t ".mailbox"
+        $before = Get-RecordText -RepoPath $t | ConvertFrom-Json
+        [System.IO.File]::WriteAllText((Join-Path $t "tracked.txt"), "v2", $script:utf8NoBom)
+
+        & $script:initScript -RepoPath $t -Force *>$null
+
+        $after = Get-RecordText -RepoPath $t | ConvertFrom-Json
+        $after.epoch | Should -Be ($before.epoch + 1)
+        $after.baseline.id | Should -Be $before.baseline.id
+        $after.baseline.sha256 | Should -Be $before.baseline.sha256
+        Test-Path -LiteralPath (Join-Path $mailbox "baseline-$($before.baseline.id).json") | Should -BeTrue
+        Invoke-Handoff -RepoPath $t -Role agent-a -Action Offer | Out-Null
+        @((Get-RecordText -RepoPath $t | ConvertFrom-Json).dirty_manifest.fact) -match 'tracked\.txt' | Should -Not -BeNullOrEmpty
+    }
+
+    It "keeps a record without a baseline without one across init -Force, warns, and refuses Offer" {
+        $t = New-CommittedTarget "init-force-no-baseline"
+        $recordPath = Join-Path $t ".mailbox\implementer.json"
+        $record = Get-Content -Raw $recordPath | ConvertFrom-Json
+        $legacy = [ordered]@{}
+        foreach ($property in $record.PSObject.Properties) { if ($property.Name -ne "baseline") { $legacy[$property.Name] = $property.Value } }
+        Write-MailboxJson -Path $recordPath -Object ([pscustomobject]$legacy)
+
+        $warnings = @(& $script:initScript -RepoPath $t -Force 3>&1 6>$null |
+                Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+
+        ($warnings.Message -join "`n") | Should -Match "no handoff baseline.*-AcknowledgeHistory"
+        $after = Get-Content -Raw $recordPath | ConvertFrom-Json
+        $after.epoch | Should -Be ($record.epoch + 1)
+        $after.baseline | Should -BeNullOrEmpty
+        { & $script:handoffScript -RepoPath $t -Role agent-a -Action Offer *>$null } | Should -Throw "*references no baseline*"
+    }
+
+    It "recreates a deleted record on an existing log without a baseline, warns, and refuses Offer" {
+        $t = New-CommittedTarget "init-recreated-record"
+        $recordPath = Join-Path $t ".mailbox\implementer.json"
+        Remove-Item -LiteralPath $recordPath
+
+        $warnings = @(& $script:initScript -RepoPath $t 3>&1 6>$null |
+                Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+
+        ($warnings.Message -join "`n") | Should -Match "no handoff baseline.*-AcknowledgeHistory"
+        $after = Get-Content -Raw $recordPath | ConvertFrom-Json
+        $after.epoch | Should -Be 1
+        $after.state | Should -Be "active"
+        $after.baseline | Should -BeNullOrEmpty
+        { & $script:handoffScript -RepoPath $t -Role agent-a -Action Offer *>$null } | Should -Throw "*references no baseline*"
+    }
+
+    It "replaces an existing baseline with init -AcknowledgeHistory, keeping owner, epoch and state" {
+        $t = New-CommittedTarget "init-ack-rebaseline"
+        $mailbox = Join-Path $t ".mailbox"
+        $before = Get-RecordText -RepoPath $t | ConvertFrom-Json
+        [System.IO.File]::WriteAllText((Join-Path $t "tracked.txt"), "v2", $script:utf8NoBom)
+
+        & $script:initScript -RepoPath $t -AcknowledgeHistory *>$null
+
+        $after = Get-RecordText -RepoPath $t | ConvertFrom-Json
+        $after.baseline.id | Should -Match '^[0-9a-f]{32}$'
+        $after.baseline.id | Should -Not -Be $before.baseline.id
+        Test-Path -LiteralPath (Join-Path $mailbox "baseline-$($before.baseline.id).json") | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $mailbox "baseline-$($after.baseline.id).json") | Should -BeTrue
+        $after.owner | Should -Be $before.owner
+        $after.epoch | Should -Be $before.epoch
+        $after.state | Should -Be $before.state
+        Invoke-Handoff -RepoPath $t -Role agent-a -Action Offer | Out-Null
+        @((Get-RecordText -RepoPath $t | ConvertFrom-Json).dirty_manifest).Count | Should -Be 0
+    }
+
+    It "refuses init -AcknowledgeHistory while an offer is open, and changes no mailbox file" {
+        $t = New-CommittedTarget "init-ack-open-offer"
+        $mailbox = Join-Path $t ".mailbox"
+        Invoke-Handoff -RepoPath $t -Role agent-a -Action Offer | Out-Null
+        & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "ACK #1"
+        $snapshot = @(Get-ChildItem -LiteralPath $mailbox -Force | Sort-Object Name |
+                ForEach-Object { "{0}={1}" -f $_.Name, (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }) -join "|"
+
+        { & $script:initScript -RepoPath $t -AcknowledgeHistory *>$null } | Should -Throw "*open handoff offer at epoch 1*Cancel it first*"
+
+        (@(Get-ChildItem -LiteralPath $mailbox -Force | Sort-Object Name |
+                    ForEach-Object { "{0}={1}" -f $_.Name, (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }) -join "|") |
+            Should -BeExactly $snapshot
+    }
+
+    It "replaces an offered record with an active one and a fresh baseline for init -Force -AcknowledgeHistory" {
+        $t = New-CommittedTarget "init-force-ack-offer"
+        $mailbox = Join-Path $t ".mailbox"
+        Invoke-Handoff -RepoPath $t -Role agent-a -Action Offer | Out-Null
+        $offered = Get-RecordText -RepoPath $t | ConvertFrom-Json
+        & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "ACK #1"
+
+        & $script:initScript -RepoPath $t -Force -AcknowledgeHistory *>$null
+
+        $after = Get-RecordText -RepoPath $t | ConvertFrom-Json
+        $after.state | Should -Be "active"
+        $after.epoch | Should -Be ($offered.epoch + 1)
+        $after.baseline.id | Should -Not -Be $offered.baseline.id
+        Test-Path -LiteralPath (Join-Path $mailbox "baseline-$($offered.baseline.id).json") | Should -BeFalse
+        $logText = Get-Content -Raw (Join-Path $mailbox "session.log.md")
+        foreach ($role in @("agent-a", "agent-b")) {
+            (Get-Content -Raw (Join-Path $mailbox "$role.cursor")) |
+                Should -BeExactly "$(Get-CocopilotLogGeneration -Text $logText) $($logText.Length)`n"
+        }
+        { & $script:handoffScript -RepoPath $t -Role agent-b -Action Accept -Epoch $offered.epoch *>$null } | Should -Throw
+    }
 }
 
 Describe "write-lane.ps1" {
@@ -1420,6 +1540,20 @@ Describe "cleanup-mailbox.ps1 (R0)" {
         Test-Path (Join-Path $main ".mailbox") | Should -BeFalse
         $null = git -C $linked check-ignore -q -- .mailbox/implementer.json
         $LASTEXITCODE | Should -Be 0
+    }
+
+    It "shows a non-ASCII path exactly in its final git status under an OEM console code page" {
+        $t = New-FakeTarget "cleanup-oem-status"
+        git -C $t config core.quotePath false
+        & $script:initScript -RepoPath $t *>$null
+        $name = "caf" + [char]0x00E9 + ".txt"
+        [System.IO.File]::WriteAllText((Join-Path $t $name), "x", $script:utf8NoBom)
+
+        $shown = Invoke-WithConsoleCodePage -CodePage 850 -ScriptBlock {
+            & $script:cleanupScript -RepoPath $t -Confirm:$false 6>&1 | Out-String
+        }
+
+        $shown | Should -Match ("(?m)^\?\? " + [regex]::Escape($name) + "\r?$")
     }
 
     It "refuses a cocopilot install as a target, by its own path or through an alias" {

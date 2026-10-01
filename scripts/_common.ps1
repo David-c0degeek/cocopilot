@@ -122,8 +122,9 @@ function Write-MailboxJson {
     .SYNOPSIS
         Replaces a mailbox JSON file (implementer.json) whole through
         Write-CocopilotFileAtomic: readers see the old or the new record,
-        never a missing or partial one. Two valid concurrent writers still
-        race - last writer wins (see COLLABORATION.md).
+        never a missing or partial one. It does not serialize writers:
+        callers that read and then replace the record hold the ownership
+        lock (Enter-CocopilotOwnershipLock).
     #>
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -901,11 +902,13 @@ function Get-CocopilotTrackedMailboxPaths {
     #>
     param([Parameter(Mandatory)][string]$RepoPath)
 
-    $output = @(git -C $RepoPath ls-files -- .mailbox 2>$null)
-    if ($LASTEXITCODE -ne 0) {
-        throw "git ls-files failed in '$RepoPath' (exit $LASTEXITCODE); refusing to guess what it tracks under .mailbox/."
+    # -z and Invoke-CocopilotGit: exact UTF-8 paths, never quoted or
+    # decoded through the console code page.
+    $result = Invoke-CocopilotGit -WorkTree $RepoPath -Arguments @("ls-files", "-z", "--", ".mailbox") -AllowedExitCodes @(0..255)
+    if ($result.ExitCode -ne 0) {
+        throw "git ls-files failed in '$RepoPath' (exit $($result.ExitCode)); refusing to guess what it tracks under .mailbox/."
     }
-    return @($output | Where-Object { $_ })
+    return @($result.Output.Split([char]0) | Where-Object { $_ })
 }
 
 function Read-CocopilotTextFile {

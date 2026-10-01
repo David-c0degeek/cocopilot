@@ -23,13 +23,14 @@
     cocopilot's other mailbox files).
 
     Delivery cursors record how far each agent has handled the log (see
-    watch-mailbox.ps1). A new log resets both to its end, since it holds
-    only its init entry. For an existing log, init never counts history as
-    handled on its own: a missing cursor stays missing, so the first watch
-    of that agent replays the whole log, and an existing cursor is never
-    moved. Likewise, an ownership record without a handoff baseline (from
-    an older cocopilot) keeps none, and handoffs stay refused. Only
-    -AcknowledgeHistory changes either.
+    watch-mailbox.ps1), and the handoff baseline records the state that
+    the current ownership started from (see handoff.ps1). Both are taken
+    from the current state only for a new mailbox, whose log holds just
+    its init entry, or with -AcknowledgeHistory. Otherwise what happened
+    so far stays unknown: a missing cursor stays missing, so the first
+    watch of that agent replays the whole log, and an existing cursor is
+    never moved. A record without a baseline keeps none, so handoffs stay
+    refused, and -Force keeps the baseline of the record it replaces.
 
     Before anything is written, does a small safety check: if <RepoPath> is
     a git repository and .mailbox/ is not ignored yet, this adds cocopilot's
@@ -59,16 +60,20 @@
 .PARAMETER Force
     Overwrite the existing ownership record and the two lane files. The
     record's epoch rises by one, so an offer from before the reset can
-    never be accepted.
+    never be accepted. The new record keeps the handoff baseline of the
+    one it replaces, or none if that had none.
 
 .PARAMETER AcknowledgeHistory
     Counts everything so far as handled: moves both delivery cursors to
-    the log's current end, also a cursor that exists, and gives an
-    ownership record without a baseline the current state as its first
-    one (owner and epoch unchanged). This is the upgrade step for a
-    mailbox from an older cocopilot. Use it only when every entry so far
-    is handled, with no STOP or QUESTION still pending, and stop both
-    agents first. Nothing in cocopilot passes it for you.
+    the log's current end, also a cursor that exists, and records the
+    current state as the handoff baseline, replacing an existing one.
+    Owner, epoch and state stay as they are. This is also the upgrade
+    step for a mailbox from an older cocopilot. Use it only when every
+    entry so far is handled, with no STOP or QUESTION still pending, and
+    stop both agents first. It refuses while a handoff offer is open:
+    cancel the offer first, or combine it with -Force, which replaces the
+    offered record with an active one at a raised epoch. Nothing in
+    cocopilot passes it for you.
 
 .PARAMETER AllowNonGit
     Pair directly on a workspace root that is itself not a git repository
@@ -76,14 +81,13 @@
     children. Without this switch, such a target is refused, since the
     protocol's ownership anchors (head / dirty_manifest) normally pin to
     git HEAD/status, which the root itself doesn't have. With
-    -AllowNonGit, head is recorded as the fixed sentinel "non-git-root"
-    and dirty_manifest becomes the authoritative handoff anchor instead —
-    see COLLABORATION.md "Ownership handoff" for exactly what a
-    HANDOFF_OFFER must record in that mode. If you only need read-only
-    cross-repo context while writing to just ONE child repo,
-    start-agents.ps1 -ContextRoot (pairing on that one repo, with the
-    workspace granted as a read-only search scope) is the lighter-weight
-    alternative.
+    -AllowNonGit, head is recorded as the fixed sentinel "non-git-root",
+    and handoff.ps1 computes the dirty manifest against the baseline for
+    the whole root - see COLLABORATION.md "Non-git workspace roots". If
+    you only need read-only cross-repo context while writing to just ONE
+    child repo, start-agents.ps1 -ContextRoot (pairing on that one repo,
+    with the workspace granted as a read-only search scope) is the
+    lighter-weight alternative.
 
 .EXAMPLE
     .\scripts\init-mailbox.ps1 -RepoPath C:\Repos\some-other-project
@@ -149,7 +153,7 @@ if ($isGitRepo) {
         "cross-repo context while writing to just ONE child repo, start-agents.ps1 -ContextRoot " +
         "is the lighter-weight alternative.")
 } else {
-    Write-Warning "$RepoPath is not a git repository (-AllowNonGit): head will read the fixed sentinel 'non-git-root', no git ignore rule is added, and dirty_manifest becomes the authoritative handoff anchor - see COLLABORATION.md 'Ownership handoff' for what a HANDOFF_OFFER must record in this mode. Make sure .mailbox/ never gets committed here."
+    Write-Warning "$RepoPath is not a git repository (-AllowNonGit): head will read the fixed sentinel 'non-git-root', no git ignore rule is added, and handoff.ps1 computes the dirty manifest against the baseline for the whole root - see COLLABORATION.md 'Non-git workspace roots'. Make sure .mailbox/ never gets committed here."
 }
 
 if (Test-Path -LiteralPath $mailboxDir) {
@@ -214,64 +218,84 @@ if ($isGitRepo) {
     }
 }
 
+# The baseline follows the same rule as the cursors below: it is taken from
+# the current state only for a new mailbox (no log before this run) or with
+# -AcknowledgeHistory. Otherwise the changes made so far stay unknown.
+$logExisted = Test-Path -LiteralPath $sessionLogPath
+$takeBaseline = $AcknowledgeHistory -or -not $logExisted
+$noBaselineWarning = ("$implementerPath has no handoff baseline, so handoffs are refused. Only when every change " +
+    "and every log entry so far is handled, re-run this command with -AcknowledgeHistory to record the current " +
+    "state as the baseline.")
+
 $lock = Enter-CocopilotOwnershipLock -MailboxDir $mailboxDir
 try {
-    if ((Test-Path -LiteralPath $implementerPath) -and -not $Force) {
-        $existing = Read-CocopilotSharedText -Path $implementerPath | ConvertFrom-Json
-        if ($null -eq $existing.PSObject.Properties["baseline"] -or $null -eq $existing.baseline) {
-            if ($AcknowledgeHistory) {
-                # A record from an older cocopilot has no baseline, so no
-                # handoff could prove its manifest. Recording the current
-                # state counts every change so far as known, which only the
-                # explicit switch may do.
-                $fingerprint = Get-CocopilotWorkspaceFingerprint -RepoPath $RepoPath
-                $upgraded = [ordered]@{}
-                foreach ($property in $existing.PSObject.Properties) { $upgraded[$property.Name] = $property.Value }
-                $upgraded["baseline"] = Save-CocopilotBaseline -MailboxDir $mailboxDir -Fingerprint $fingerprint
-                Write-MailboxJson -Path $implementerPath -Object ([pscustomobject]$upgraded)
-                Write-Host "Recorded the current state as the handoff baseline in $implementerPath (owner and epoch unchanged)." -ForegroundColor Green
-                if (-not $fingerprint.Complete) { Write-Warning "The baseline is partial ($($fingerprint.Reason)); handoffs will be refused here." }
-            } else {
-                Write-Warning ("$implementerPath has no handoff baseline (it predates baselines), so handoffs are refused. " +
-                    "Only when every change and every log entry so far is handled, re-run this command with " +
-                    "-AcknowledgeHistory to record the current state as the baseline.")
-            }
+    $previous = $null
+    if (Test-Path -LiteralPath $implementerPath) {
+        $previous = Read-CocopilotSharedText -Path $implementerPath | ConvertFrom-Json
+    }
+    $previousBaseline = $null
+    if ($null -ne $previous -and $null -ne $previous.PSObject.Properties["baseline"]) { $previousBaseline = $previous.baseline }
+
+    # A new baseline under an open offer could make the offer's manifest
+    # match again after later edits, so Accept would not see them.
+    if ($AcknowledgeHistory -and -not $Force -and $null -ne $previous -and $previous.state -eq "offered") {
+        throw ("$implementerPath has an open handoff offer at epoch $($previous.epoch). Cancel it first " +
+            "(handoff.ps1 -Action Cancel -Epoch $($previous.epoch)), or add -Force to replace the record. Nothing was changed.")
+    }
+
+    $supersededBaseline = $null
+    if ($null -ne $previous -and -not $Force) {
+        if ($AcknowledgeHistory) {
+            $fingerprint = Get-CocopilotWorkspaceFingerprint -RepoPath $RepoPath
+            $updated = [ordered]@{}
+            foreach ($property in $previous.PSObject.Properties) { $updated[$property.Name] = $property.Value }
+            $updated["baseline"] = Save-CocopilotBaseline -MailboxDir $mailboxDir -Fingerprint $fingerprint
+            Write-MailboxJson -Path $implementerPath -Object ([pscustomobject]$updated)
+            $supersededBaseline = $previousBaseline
+            Write-Host "Recorded the current state as the handoff baseline in $implementerPath (owner, epoch and state unchanged)." -ForegroundColor Green
+            if (-not $fingerprint.Complete) { Write-Warning "The baseline is partial ($($fingerprint.Reason)); handoffs will be refused here." }
+        } elseif ($null -eq $previousBaseline) {
+            Write-Warning $noBaselineWarning
         } else {
             Write-Host "implementer.json already exists, leaving it as-is (use -Force to reset)." -ForegroundColor Yellow
         }
     } else {
-        # -Force keeps the epoch monotonic (the old record passed the ownership
-        # check above), so an offer from before the reset can never be accepted.
+        # A new record, for -Force or a missing one. -Force keeps the epoch
+        # monotonic, so an offer from before the reset can never be accepted.
         $epoch = 1
-        $supersededBaseline = $null
-        if (Test-Path -LiteralPath $implementerPath) {
-            $previous = Read-CocopilotSharedText -Path $implementerPath | ConvertFrom-Json
-            $epoch = [long]$previous.epoch + 1
-            if ($null -ne $previous.PSObject.Properties["baseline"]) { $supersededBaseline = $previous.baseline }
-        }
-        $fingerprint = Get-CocopilotWorkspaceFingerprint -RepoPath $RepoPath
+        if ($null -ne $previous) { $epoch = [long]$previous.epoch + 1 }
         $record = Get-Content -LiteralPath $implementerTemplate -Raw | ConvertFrom-Json
         $record.epoch = $epoch
         $record.owner = $Owner
         $record.owner_model = $OwnerModel
         $record.head = $head
-        $record.baseline = Save-CocopilotBaseline -MailboxDir $mailboxDir -Fingerprint $fingerprint
-        Write-MailboxJson -Path $implementerPath -Object $record
-        if ($null -ne $supersededBaseline -and [string]$supersededBaseline.id -cmatch '^[0-9a-f]{32}$') {
-            $supersededPath = Join-Path $mailboxDir "baseline-$($supersededBaseline.id).json"
-            try {
-                if (Test-Path -LiteralPath $supersededPath) { Remove-Item -LiteralPath $supersededPath -Force }
-            } catch {
-                Write-Warning "Could not remove the superseded baseline '$supersededPath': $($_.Exception.Message)"
-            }
+        $fingerprint = $null
+        if ($takeBaseline) {
+            $fingerprint = Get-CocopilotWorkspaceFingerprint -RepoPath $RepoPath
+            $record.baseline = Save-CocopilotBaseline -MailboxDir $mailboxDir -Fingerprint $fingerprint
+            $supersededBaseline = $previousBaseline
+        } else {
+            $record.baseline = $previousBaseline
         }
+        Write-MailboxJson -Path $implementerPath -Object $record
         # Only a real git repo's head looks like a SHA worth truncating for
         # display; the non-git-root sentinel is short and self-explanatory, so
         # showing it in full avoids an odd mid-word cut ("non-git" instead of
         # "non-git-root").
         $headDisplay = if ($isGitRepo) { $head.Substring(0, [Math]::Min(7, $head.Length)) } else { $head }
         Write-Host "Wrote $implementerPath (epoch=$epoch, owner=$Owner, head=$headDisplay)" -ForegroundColor Green
-        if (-not $fingerprint.Complete) { Write-Warning "The handoff baseline is partial ($($fingerprint.Reason)); handoffs will be refused here." }
+        if ($null -ne $fingerprint -and -not $fingerprint.Complete) { Write-Warning "The handoff baseline is partial ($($fingerprint.Reason)); handoffs will be refused here." }
+        if ($null -eq $record.baseline) { Write-Warning $noBaselineWarning }
+    }
+
+    # Only after the record no longer references it.
+    if ($null -ne $supersededBaseline -and [string]$supersededBaseline.id -cmatch '^[0-9a-f]{32}$') {
+        $supersededPath = Join-Path $mailboxDir "baseline-$($supersededBaseline.id).json"
+        try {
+            if (Test-Path -LiteralPath $supersededPath) { Remove-Item -LiteralPath $supersededPath -Force }
+        } catch {
+            Write-Warning "Could not remove the superseded baseline '$supersededPath': $($_.Exception.Message)"
+        }
     }
 } finally {
     $lock.Dispose()

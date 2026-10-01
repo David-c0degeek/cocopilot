@@ -64,10 +64,12 @@ Lane discipline (this is what makes simultaneous work safe):
 - Use the banner's **Lane write command** to post every entry: build
   `$turn` as the raw body (no timestamp/heading — the command generates
   that from your role), then run it verbatim. It appends to the session
-  log FIRST and overwrites your lane LAST for you, retrying only a
-  genuine sharing violation. If it's ever unavailable, fall back to the
-  raw .NET calls in the protocol's "Mailbox lanes and the session log"
-  section (same write order; retry a sharing violation on the log append
+  log FIRST and overwrites your lane LAST for you. It retries the log
+  append only on a sharing violation, and the lane replace on a sharing
+  violation or an access-denied rename, for a few seconds before it
+  reports the error. If it's ever unavailable, fall back to the raw .NET
+  calls in the protocol's "Mailbox lanes and the session log" section
+  (same write order; retry a sharing violation on the log append
   yourself).
 
 Listening for peer changes (do this instead of waiting to be re-prompted):

@@ -52,7 +52,7 @@
 
 .PARAMETER RepoPath
     The repository being paired on (its .mailbox/ holds the log + lanes).
-    Required — unlike the other scripts, there is no current-directory
+    Required, as in handoff.ps1: there is no current-directory
     default, since this is normally invoked with the exact path already
     resolved in the session banner.
 
@@ -110,7 +110,7 @@ foreach ($p in $requiredPaths) {
 # Every refusal runs before the first write.
 $forbiddenLine = Get-CocopilotForbiddenBodyLine -Body $Turn
 if ($null -ne $forbiddenLine) {
-    throw "-Turn contains a line a log reader would take for an entry heading or an end marker: '$forbiddenLine'. Indent or rephrase that line; nothing was written."
+    throw "-Turn contains a line a log reader would take for an entry heading or an end marker: '$forbiddenLine'. Quote that line with '> ' or rephrase it; nothing was written."
 }
 if ($VerifyRequest -and $Turn -notmatch '^\s*VERIFY_REQUEST\b') {
     throw "-VerifyRequest pins a VERIFY_REQUEST, but -Turn does not start with 'VERIFY_REQUEST'; nothing was written."

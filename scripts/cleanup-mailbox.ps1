@@ -228,12 +228,19 @@ function Invoke-SingleMailboxCleanup {
 
     # 4. Final safety check: show the target repo's git status so you can see
     # at a glance that nothing cocopilot-related remains tracked or staged.
-    # Piped through Write-Host (not left as pipeline/success-stream output)
-    # so these lines are always just console text, never part of this
-    # function's actual return value below.
+    # Written through Write-Host (not the success stream), so these lines are
+    # always just console text, never part of this function's return value.
+    # Read through Invoke-CocopilotGit, so non-ASCII paths are decoded as
+    # UTF-8. Every change above has already succeeded or thrown, so a failure
+    # of this display only warns.
     if ($isGitRepo) {
         Write-Host "`n--- git status for $RepoPath ---" -ForegroundColor Cyan
-        git -C $RepoPath status --short | ForEach-Object { Write-Host $_ }
+        try {
+            $status = Invoke-CocopilotGit -WorkTree $RepoPath -Arguments @("status", "--short")
+            foreach ($line in ($status.Output -split "\r?\n")) { if ($line) { Write-Host $line } }
+        } catch {
+            Write-Warning "Could not show the git status: $($_.Exception.Message)"
+        }
     }
 
     return $anyChangeMade
