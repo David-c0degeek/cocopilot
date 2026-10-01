@@ -489,6 +489,18 @@ Run fail-closed from the repo root (copy/paste as-is):
 pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw "Pester 5 required" }; $c = New-PesterConfiguration; $c.Run.Path = "tests"; $c.Run.Exit = $true; Invoke-Pester -Configuration $c'
 ```
 
+For quick feedback while you work, run the fast subset. It runs the 112 tests without the `Slow` tag and skips the
+other 103 tests. It never replaces the full run above, which stays the check before any commit.
+
+```powershell
+# the full-run command plus one filter line
+pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw "Pester 5 required" }; $c = New-PesterConfiguration; $c.Run.Path = "tests"; $c.Run.Exit = $true; $c.Filter.ExcludeTag = "Slow"; Invoke-Pester -Configuration $c'
+```
+
+Give a test `-Tag Slow` when it starts a process or a job, runs the watcher or really sleeps, or when one of its cases
+took 1 second or more in a serial full run. Durations change with machine load, so a test that was slow in one of the
+observed runs keeps the tag.
+
 ## FAQ
 
 **Does this need my repo to be on GitHub?** No. Any local Git repository works; cocopilot's scripts never require or

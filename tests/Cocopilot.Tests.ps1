@@ -112,7 +112,7 @@ BeforeAll {
 }
 
 Describe "init-mailbox.ps1 (R0/R1)" {
-    It "initializes a clean git target from the tracked templates" {
+    It "initializes a clean git target from the tracked templates" -Tag Slow {
         $t = New-FakeTarget "init-clean"
         & $script:initScript -RepoPath $t *>$null
         Test-Path (Join-Path $t ".mailbox\implementer.json") | Should -BeTrue
@@ -127,7 +127,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         $record.state | Should -Be "active"
     }
 
-    It "is idempotent without -Force and does not duplicate the ignore rule" {
+    It "is idempotent without -Force and does not duplicate the ignore rule" -Tag Slow {
         $t = New-FakeTarget "init-idem"
         & $script:initScript -RepoPath $t *>$null
         $laneFile = Join-Path $t ".mailbox\agent-a.md"
@@ -148,7 +148,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         (@(git -C $repo status --porcelain --untracked-files=all) -join "|") | Should -Be ""
     }
 
-    It "escapes git glob characters in a subdirectory name so the rule matches literally" {
+    It "escapes git glob characters in a subdirectory name so the rule matches literally" -Tag Slow {
         $repo = New-FakeTarget "init-glob"
         $sub = Join-Path $repo "services\[api]"
         [System.IO.Directory]::CreateDirectory($sub) | Out-Null
@@ -159,7 +159,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         (@(git -C $repo status --porcelain --untracked-files=all) -join "|") | Should -Be ""
     }
 
-    It "roots the exclude rule at a non-ASCII subdirectory under an OEM console code page" {
+    It "roots the exclude rule at a non-ASCII subdirectory under an OEM console code page" -Tag Slow {
         $repo = New-FakeTarget "init-oem-subdir"
         $name = "caf" + [char]0x00E9
         $sub = Join-Path $repo $name
@@ -170,7 +170,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         $LASTEXITCODE | Should -Be 0
     }
 
-    It "writes a linked worktree's rule to the shared exclude file at a non-ASCII path under an OEM console code page" {
+    It "writes a linked worktree's rule to the shared exclude file at a non-ASCII path under an OEM console code page" -Tag Slow {
         $main = New-FakeTarget ("init-oem-m" + [char]0x00FC + "n")
         [System.IO.File]::WriteAllText((Join-Path $main "app.txt"), "v1`n", $script:utf8NoBom)
         git -C $main add app.txt 2>$null | Out-Null
@@ -195,7 +195,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         }
     }
 
-    It "adds no rule when the user's own rule already ignores .mailbox/" {
+    It "adds no rule when the user's own rule already ignores .mailbox/" -Tag Slow {
         $t = New-FakeTarget "init-user-rule"
         [System.IO.File]::WriteAllText((Join-Path $t ".gitignore"), ".mailbox/`n", $script:utf8NoBom)
         & $script:initScript -RepoPath $t *>$null
@@ -203,7 +203,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         (Get-Content -Raw (Join-Path $t ".gitignore")) | Should -Be ".mailbox/`n"
     }
 
-    It "keeps the mailbox ignored through git stash, because no tracked file is edited" {
+    It "keeps the mailbox ignored through git stash, because no tracked file is edited" -Tag Slow {
         $t = New-FakeTarget "init-stash"
         [System.IO.File]::WriteAllText((Join-Path $t "app.txt"), "v1`n", $script:utf8NoBom)
         git -C $t add app.txt 2>$null | Out-Null
@@ -251,7 +251,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         Get-Content -Raw (Join-Path $t ".git\info\exclude") | Should -Be $excludeBefore
     }
 
-    It "completes a partially initialized cocopilot mailbox on re-run" {
+    It "completes a partially initialized cocopilot mailbox on re-run" -Tag Slow {
         $t = New-FakeTarget "init-partial"
         & $script:initScript -RepoPath $t *>$null
         $mailbox = Join-Path $t ".mailbox"
@@ -267,7 +267,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         Test-Path (Join-Path $t ".mailbox") | Should -BeFalse
     }
 
-    It "-Force resets the record and scratchpad but preserves the session log" {
+    It "-Force resets the record and scratchpad but preserves the session log" -Tag Slow {
         $t = New-FakeTarget "init-force"
         & $script:initScript -RepoPath $t *>$null
         $log = Join-Path $t ".mailbox\session.log.md"
@@ -278,7 +278,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         $logRaw | Should -Match "session reset \(-Force\)"
     }
 
-    It "creates the session log without a BOM" {
+    It "creates the session log without a BOM" -Tag Slow {
         $t = New-FakeTarget "init-bom"
         & $script:initScript -RepoPath $t *>$null
         $bytes = [System.IO.File]::ReadAllBytes((Join-Path $t ".mailbox\session.log.md"))
@@ -301,7 +301,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         Test-Path (Join-Path $t ".gitignore") | Should -BeFalse
     }
 
-    It "gives a git repo with no commits yet the zero SHA, not the non-git-root sentinel" {
+    It "gives a git repo with no commits yet the zero SHA, not the non-git-root sentinel" -Tag Slow {
         # Regression test for the sentinel fix: New-FakeTarget's `git init`
         # never commits, so this is a REAL git repo whose HEAD simply can't
         # resolve yet - it must stay distinguishable from an -AllowNonGit
@@ -312,7 +312,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         $record.head | Should -Be ("0" * 40)
     }
 
-    It "creates the log whole with a generation, and both cursors at its end" {
+    It "creates the log whole with a generation, and both cursors at its end" -Tag Slow {
         $t = New-FakeTarget "init-cursors"
         & $script:initScript -RepoPath $t *>$null
         $mailbox = Join-Path $t ".mailbox"
@@ -329,7 +329,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         @(Get-ChildItem -LiteralPath $mailbox -Force -Filter "*.tmp").Count | Should -Be 0
     }
 
-    It "never creates or moves a cursor for an existing log, and warns about a missing one" {
+    It "never creates or moves a cursor for an existing log, and warns about a missing one" -Tag Slow {
         $t = New-FakeTarget "init-cursor-rerun"
         & $script:initScript -RepoPath $t *>$null
         $mailbox = Join-Path $t ".mailbox"
@@ -346,7 +346,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         $warnings[0].Message | Should -Match "No delivery cursor for agent-b: .*replays the whole session log.*-AcknowledgeHistory"
     }
 
-    It "-AcknowledgeHistory moves both cursors to the log's current end, also one that exists" {
+    It "-AcknowledgeHistory moves both cursors to the log's current end, also one that exists" -Tag Slow {
         $t = New-FakeTarget "init-cursor-acknowledge"
         & $script:initScript -RepoPath $t *>$null
         $mailbox = Join-Path $t ".mailbox"
@@ -364,7 +364,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         }
     }
 
-    It "upgrades a mailbox from an older cocopilot only with -AcknowledgeHistory, leaving the legacy log untouched" {
+    It "upgrades a mailbox from an older cocopilot only with -AcknowledgeHistory, leaving the legacy log untouched" -Tag Slow {
         $t = New-FakeTarget "init-upgrade"
         & $script:initScript -RepoPath $t *>$null
         $mailbox = Join-Path $t ".mailbox"
@@ -386,7 +386,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
         }
     }
 
-    It "-Force raises the epoch by one, appends a framed reset entry and leaves the cursors alone" {
+    It "-Force raises the epoch by one, appends a framed reset entry and leaves the cursors alone" -Tag Slow {
         $t = New-FakeTarget "init-force-epoch"
         & $script:initScript -RepoPath $t *>$null
         $mailbox = Join-Path $t ".mailbox"
@@ -433,7 +433,7 @@ Describe "init-mailbox.ps1 (R0/R1)" {
 }
 
 Describe "watch-mailbox.ps1 (R1) - child process" {
-    It "wakes on a one-byte change to a lane file (no -Role: both watched)" {
+    It "wakes on a one-byte change to a lane file (no -Role: both watched)" -Tag Slow {
         $t = New-FakeTarget "watch-lane"
         & $script:initScript -RepoPath $t *>$null
         $result = Invoke-WatcherChild -RepoPath $t -TimeoutSeconds 20 -AfterBaseline {
@@ -443,7 +443,7 @@ Describe "watch-mailbox.ps1 (R1) - child process" {
         $result.ExitCode | Should -Be 0
     }
 
-    It "wakes on a one-byte change to implementer.json" {
+    It "wakes on a one-byte change to implementer.json" -Tag Slow {
         $t = New-FakeTarget "watch-record"
         & $script:initScript -RepoPath $t *>$null
         $result = Invoke-WatcherChild -RepoPath $t -TimeoutSeconds 20 -AfterBaseline {
@@ -453,7 +453,7 @@ Describe "watch-mailbox.ps1 (R1) - child process" {
         $result.ExitCode | Should -Be 0
     }
 
-    It "with -Role, wakes on a PEER entry written while it waits" {
+    It "with -Role, wakes on a PEER entry written while it waits" -Tag Slow {
         $t = New-FakeTarget "watch-role-peer"
         & $script:initScript -RepoPath $t *>$null
         $writeLane = $script:writeLaneScript
@@ -465,7 +465,7 @@ Describe "watch-mailbox.ps1 (R1) - child process" {
         $result.ExitCode | Should -Be 0
     }
 
-    It "with -Role, does NOT wake on its OWN entry (bounded timeout, exit 1)" {
+    It "with -Role, does NOT wake on its OWN entry (bounded timeout, exit 1)" -Tag Slow {
         $t = New-FakeTarget "watch-role-own"
         & $script:initScript -RepoPath $t *>$null
         $writeLane = $script:writeLaneScript
@@ -477,7 +477,7 @@ Describe "watch-mailbox.ps1 (R1) - child process" {
         $result.ExitCode | Should -Be 1
     }
 
-    It "with -Role, wakes on an ownership record change and says so" {
+    It "with -Role, wakes on an ownership record change and says so" -Tag Slow {
         $t = New-FakeTarget "watch-role-record"
         & $script:initScript -RepoPath $t *>$null
         $common = Join-Path $script:scriptsDir "_common.ps1"
@@ -494,7 +494,7 @@ Describe "watch-mailbox.ps1 (R1) - child process" {
         $result.ExitCode | Should -Be 0
     }
 
-    It "does not wake on a log-only append (bounded timeout, exit 1)" {
+    It "does not wake on a log-only append (bounded timeout, exit 1)" -Tag Slow {
         $t = New-FakeTarget "watch-logonly"
         & $script:initScript -RepoPath $t *>$null
         $result = Invoke-WatcherChild -RepoPath $t -TimeoutSeconds 6 -AfterBaseline {
@@ -539,7 +539,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         $script:legacyHeader = "# session log - write-once history (see cocopilot's COLLABORATION.md; never edit or delete entries)`n"
     }
 
-    It "delivers a peer entry written before it started, at once" {
+    It "delivers a peer entry written before it started, at once" -Tag Slow {
         $t = New-FakeTarget "deliver-prearm"
         & $script:initScript -RepoPath $t *>$null
         & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "CHALLENGE`nwritten before the watch"
@@ -552,7 +552,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         $result.Output | Should -Match "OWNERSHIP_RECORD \(unchanged\):"
     }
 
-    It "delivers every entry written since the last read, in order" {
+    It "delivers every entry written since the last read, in order" -Tag Slow {
         $t = New-FakeTarget "deliver-two"
         & $script:initScript -RepoPath $t *>$null
         & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "CHALLENGE`nfirst"
@@ -563,7 +563,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         $result.Output.IndexOf("    first") | Should -BeGreaterThan -1
     }
 
-    It "delivers the same entries again until they are acknowledged" {
+    It "delivers the same entries again until they are acknowledged" -Tag Slow {
         $t = New-FakeTarget "deliver-again"
         & $script:initScript -RepoPath $t *>$null
         & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "ANSWER #1`nplease handle me"
@@ -576,7 +576,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         (Get-Content -Raw (Join-Path $t ".mailbox\agent-a.cursor")) | Should -BeExactly $cursorBefore
     }
 
-    It "moves the cursor on -Ack, then delivers only what arrives later" {
+    It "moves the cursor on -Ack, then delivers only what arrives later" -Tag Slow {
         $t = New-FakeTarget "deliver-ack"
         & $script:initScript -RepoPath $t *>$null
         & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "ACK #1`nold"
@@ -592,7 +592,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         $next.Output | Should -Not -Match "(?m)^    old\r?$"
     }
 
-    It "accepts the same token twice" {
+    It "accepts the same token twice" -Tag Slow {
         $t = New-FakeTarget "deliver-ack-twice"
         & $script:initScript -RepoPath $t *>$null
         & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "ACK #1"
@@ -601,7 +601,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         (Invoke-Watch -RepoPath $t -Ack $token).ExitCode | Should -Be 1
     }
 
-    It "never delivers the agent's own entries" {
+    It "never delivers the agent's own entries" -Tag Slow {
         $t = New-FakeTarget "deliver-own"
         & $script:initScript -RepoPath $t *>$null
         & $script:writeLaneScript -RepoPath $t -Role "agent-a" -Turn "SYNC #1`nmine"
@@ -613,7 +613,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         $result.Output | Should -Not -Match "mine"
     }
 
-    It "refuses an ACK token <Case> and leaves the cursor alone" -ForEach @(
+    It "refuses an ACK token <Case> and leaves the cursor alone" -Tag Slow -ForEach @(
         @{ Case = "for another log generation"; Kind = "generation" }
         @{ Case = "that points inside an entry"; Kind = "inside" }
         @{ Case = "behind the cursor"; Kind = "behind" }
@@ -639,7 +639,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         (Get-Content -Raw (Join-Path $t ".mailbox\agent-a.cursor")) | Should -BeExactly $cursorBefore
     }
 
-    It "replays the whole log from its start when <Case>" -ForEach @(
+    It "replays the whole log from its start when <Case>" -Tag Slow -ForEach @(
         @{ Case = "the cursor is missing"; Kind = "missing"; Note = "there is no cursor file" }
         @{ Case = "the cursor belongs to another log generation"; Kind = "generation"; Note = "another log generation" }
     ) {
@@ -661,7 +661,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         $result.Output | Should -Match "(?m)^    history\r?$"
     }
 
-    It "labels an unmarked entry after marked ones INCOMPLETE and still delivers what follows" {
+    It "labels an unmarked entry after marked ones INCOMPLETE and still delivers what follows" -Tag Slow {
         $t = New-FakeTarget "deliver-incomplete"
         & $script:initScript -RepoPath $t *>$null
         [System.IO.File]::AppendAllText((Join-Path $t ".mailbox\session.log.md"), "`n## 2026-01-01 00:00:00Z agent-b`ntorn text", $script:utf8NoBom)
@@ -673,7 +673,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         $result.Output | Should -Match "(?m)^    whole\r?$"
     }
 
-    It "holds back an unmarked last entry until the log settles, then delivers it labelled" {
+    It "holds back an unmarked last entry until the log settles, then delivers it labelled" -Tag Slow {
         $t = New-FakeTarget "deliver-heldback"
         & $script:initScript -RepoPath $t *>$null
         $logPath = Join-Path $t ".mailbox\session.log.md"
@@ -688,7 +688,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         (Get-AckToken -Output $settled.Output).Split(":")[1] | Should -Be (Get-Content -Raw $logPath).Length
     }
 
-    It "labels legacy entries, and keeps a short legacy log's generation and tokens valid as it grows past 512 bytes" {
+    It "labels legacy entries, and keeps a short legacy log's generation and tokens valid as it grows past 512 bytes" -Tag Slow {
         $t = New-FakeTarget "deliver-legacy"
         & $script:initScript -RepoPath $t *>$null
         $mailbox = Join-Path $t ".mailbox"
@@ -718,7 +718,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         (Get-AckToken -Output $next.Output).Split(":")[0] | Should -Be $token.Split(":")[0]
     }
 
-    It "delivers multi-byte and surrogate-pair text exactly and acknowledges exactly between entries" {
+    It "delivers multi-byte and surrogate-pair text exactly and acknowledges exactly between entries" -Tag Slow {
         $t = New-FakeTarget "deliver-unicode"
         & $script:initScript -RepoPath $t *>$null
         $firstBody = "é ✓ 😀 𝄞 — first"
@@ -741,7 +741,7 @@ Describe "watch-mailbox.ps1 delivery (-Role)" {
         $rest.Output | Should -Not -Match ([regex]::Escape($firstBody))
     }
 
-    It "rejects <Case> at once" -ForEach @(
+    It "rejects <Case> at once" -Tag Slow -ForEach @(
         @{ Case = "a zero poll interval"; Arguments = @{ PollIntervalSeconds = 0 } }
         @{ Case = "a negative timeout"; Arguments = @{ TimeoutSeconds = -1 } }
         @{ Case = "-Ack without -Role"; Arguments = @{ Ack = ("a" * 32) + ":1" } }
@@ -800,7 +800,7 @@ Describe "handoff.ps1 and handoff baselines" {
         }
     }
 
-    It "records a verifiable baseline at init" {
+    It "records a verifiable baseline at init" -Tag Slow {
         $t = New-CommittedTarget "handoff-init-baseline"
         $record = Get-RecordText -RepoPath $t | ConvertFrom-Json
         $record.baseline.id | Should -Match '^[0-9a-f]{32}$'
@@ -825,7 +825,7 @@ Describe "handoff.ps1 and handoff baselines" {
         @($capped.Facts.Values | Where-Object { $_ -like "* unhashed" }).Count | Should -BeGreaterThan 0
     }
 
-    It "hands ownership over: the offer lists every change, the accept moves the epoch and the baseline" {
+    It "hands ownership over: the offer lists every change, the accept moves the epoch and the baseline" -Tag Slow {
         $t = New-CommittedTarget "handoff-happy"
         $mailbox = Join-Path $t ".mailbox"
         $oldBaselineId = (Get-RecordText -RepoPath $t | ConvertFrom-Json).baseline.id
@@ -857,7 +857,7 @@ Describe "handoff.ps1 and handoff baselines" {
         $acceptOutput | Should -Match "(?m)^HANDOFF_ACCEPT\r?$"
     }
 
-    It "refuses <Case> and changes nothing" -ForEach @(
+    It "refuses <Case> and changes nothing" -Tag Slow -ForEach @(
         @{ Case = "an offer from the navigator"; Setup = "none"; Role = "agent-b"; Action = "Offer"; Epoch = 0; Message = "*Only the active owner offers*" }
         @{ Case = "an accept with a stale epoch"; Setup = "offer"; Role = "agent-b"; Action = "Accept"; Epoch = 2; Message = "*for epoch 1, not 2*" }
         @{ Case = "an accept by the offering agent"; Setup = "offer"; Role = "agent-a"; Action = "Accept"; Epoch = 1; Message = "*No handoff is offered to agent-a*" }
@@ -883,7 +883,7 @@ Describe "handoff.ps1 and handoff baselines" {
         Test-Path -LiteralPath (Join-Path $t ".mailbox\implementer.lock") | Should -BeFalse
     }
 
-    It "cancels an offer for good: the old epoch can never be accepted" {
+    It "cancels an offer for good: the old epoch can never be accepted" -Tag Slow {
         $t = New-CommittedTarget "handoff-cancel"
         Invoke-Handoff -RepoPath $t -Role agent-a -Action Offer | Out-Null
         Invoke-Handoff -RepoPath $t -Role agent-a -Action Cancel -Epoch 1 | Out-Null
@@ -896,7 +896,7 @@ Describe "handoff.ps1 and handoff baselines" {
         { & $script:handoffScript -RepoPath $t -Role agent-b -Action Accept -Epoch 1 *>$null } | Should -Throw "*for epoch 2, not 1*"
     }
 
-    It "lets exactly one of two concurrent accepts win" {
+    It "lets exactly one of two concurrent accepts win" -Tag Slow {
         $t = New-CommittedTarget "handoff-race"
         [System.IO.File]::WriteAllText((Join-Path $t "tracked.txt"), "v2", $script:utf8NoBom)
         Invoke-Handoff -RepoPath $t -Role agent-a -Action Offer | Out-Null
@@ -917,7 +917,7 @@ Describe "handoff.ps1 and handoff baselines" {
         @(Get-ChildItem -LiteralPath (Join-Path $t ".mailbox") -Filter "baseline-*.json").Count | Should -Be 1
     }
 
-    It "covers new and deleted worktrees and changed files at a non-git workspace root" {
+    It "covers new and deleted worktrees and changed files at a non-git workspace root" -Tag Slow {
         $root = Join-Path $TestDrive "handoff-nongit"
         New-Item -ItemType Directory -Force -Path (Join-Path $root "old-repo") | Out-Null
         git -C (Join-Path $root "old-repo") init -q 2>$null
@@ -937,7 +937,7 @@ Describe "handoff.ps1 and handoff baselines" {
         (Get-RecordText -RepoPath $root | ConvertFrom-Json).owner | Should -Be "agent-b"
     }
 
-    It "captures a repository nested inside another one: edits, re-edits, and nested repos that come and go" {
+    It "captures a repository nested inside another one: edits, re-edits, and nested repos that come and go" -Tag Slow {
         # A non-git root holding an outer repository with another repository
         # nested inside it, and an untracked payload in the nested one.
         $root = Join-Path $TestDrive "handoff-nested-root"
@@ -971,7 +971,7 @@ Describe "handoff.ps1 and handoff baselines" {
         Get-RecordText -RepoPath $root | Should -BeExactly $offered
     }
 
-    It "captures nested repositories that the parent's status hides: ignored ones and submodules" {
+    It "captures nested repositories that the parent's status hides: ignored ones and submodules" -Tag Slow {
         $t = New-CommittedTarget "handoff-hidden-nested"
         [System.IO.File]::WriteAllText((Join-Path $t ".gitignore"), "ignored/`n", $script:utf8NoBom)
         $source = Join-Path $TestDrive "handoff-submodule-source"
@@ -1003,7 +1003,7 @@ Describe "handoff.ps1 and handoff baselines" {
         $changed | Should -Contain "status|ignored/deep/inner|hidden.txt"
     }
 
-    It "refuses Offer and Accept while the state is only partly captured" {
+    It "refuses Offer and Accept while the state is only partly captured" -Tag Slow {
         $t = New-CommittedTarget "handoff-partial"
         $partial = [pscustomobject]@{
             Complete = $false
@@ -1016,7 +1016,7 @@ Describe "handoff.ps1 and handoff baselines" {
         Get-RecordText -RepoPath $t | Should -BeExactly $before
     }
 
-    It "refuses an Accept while the state is only partly captured, keeping the offer" {
+    It "refuses an Accept while the state is only partly captured, keeping the offer" -Tag Slow {
         $t = New-CommittedTarget "handoff-partial-accept"
         Invoke-Handoff -RepoPath $t -Role agent-a -Action Offer | Out-Null
         $offered = Get-RecordText -RepoPath $t
@@ -1030,7 +1030,7 @@ Describe "handoff.ps1 and handoff baselines" {
         Get-RecordText -RepoPath $t | Should -BeExactly $offered
     }
 
-    It "keeps the offer when the record commit fails after the new baseline was written" {
+    It "keeps the offer when the record commit fails after the new baseline was written" -Tag Slow {
         $t = New-CommittedTarget "handoff-crash"
         Invoke-Handoff -RepoPath $t -Role agent-a -Action Offer | Out-Null
         $offered = Get-RecordText -RepoPath $t
@@ -1042,7 +1042,7 @@ Describe "handoff.ps1 and handoff baselines" {
         Test-Path -LiteralPath (Join-Path $t ".mailbox\baseline-$referenced.json") | Should -BeTrue
     }
 
-    It "waits for the ownership lock another process holds, then records the model" {
+    It "waits for the ownership lock another process holds, then records the model" -Tag Slow {
         $t = New-CommittedTarget "handoff-lock"
         $lockPath = Join-Path $t ".mailbox\implementer.lock"
         [System.IO.File]::WriteAllText($lockPath, "")
@@ -1060,7 +1060,7 @@ Describe "handoff.ps1 and handoff baselines" {
         Test-Path -LiteralPath $lockPath | Should -BeFalse
     }
 
-    It "gives a record from an older cocopilot a baseline only with init -AcknowledgeHistory" {
+    It "gives a record from an older cocopilot a baseline only with init -AcknowledgeHistory" -Tag Slow {
         $t = New-CommittedTarget "handoff-upgrade"
         $recordPath = Join-Path $t ".mailbox\implementer.json"
         $record = Get-Content -Raw $recordPath | ConvertFrom-Json
@@ -1088,7 +1088,7 @@ Describe "handoff.ps1 and handoff baselines" {
         (Get-Content -Raw $recordPath | ConvertFrom-Json).state | Should -Be "offered"
     }
 
-    It "keeps the baseline across init -Force, so a change made before the reset stays in the next offer" {
+    It "keeps the baseline across init -Force, so a change made before the reset stays in the next offer" -Tag Slow {
         $t = New-CommittedTarget "init-force-keeps-baseline"
         $mailbox = Join-Path $t ".mailbox"
         $before = Get-RecordText -RepoPath $t | ConvertFrom-Json
@@ -1139,7 +1139,7 @@ Describe "handoff.ps1 and handoff baselines" {
         { & $script:handoffScript -RepoPath $t -Role agent-a -Action Offer *>$null } | Should -Throw "*references no baseline*"
     }
 
-    It "replaces an existing baseline with init -AcknowledgeHistory, keeping owner, epoch and state" {
+    It "replaces an existing baseline with init -AcknowledgeHistory, keeping owner, epoch and state" -Tag Slow {
         $t = New-CommittedTarget "init-ack-rebaseline"
         $mailbox = Join-Path $t ".mailbox"
         $before = Get-RecordText -RepoPath $t | ConvertFrom-Json
@@ -1159,7 +1159,7 @@ Describe "handoff.ps1 and handoff baselines" {
         @((Get-RecordText -RepoPath $t | ConvertFrom-Json).dirty_manifest).Count | Should -Be 0
     }
 
-    It "refuses init -AcknowledgeHistory while an offer is open, and changes no mailbox file" {
+    It "refuses init -AcknowledgeHistory while an offer is open, and changes no mailbox file" -Tag Slow {
         $t = New-CommittedTarget "init-ack-open-offer"
         $mailbox = Join-Path $t ".mailbox"
         Invoke-Handoff -RepoPath $t -Role agent-a -Action Offer | Out-Null
@@ -1174,7 +1174,7 @@ Describe "handoff.ps1 and handoff baselines" {
             Should -BeExactly $snapshot
     }
 
-    It "replaces an offered record with an active one and a fresh baseline for init -Force -AcknowledgeHistory" {
+    It "replaces an offered record with an active one and a fresh baseline for init -Force -AcknowledgeHistory" -Tag Slow {
         $t = New-CommittedTarget "init-force-ack-offer"
         $mailbox = Join-Path $t ".mailbox"
         Invoke-Handoff -RepoPath $t -Role agent-a -Action Offer | Out-Null
@@ -1198,7 +1198,7 @@ Describe "handoff.ps1 and handoff baselines" {
 }
 
 Describe "write-lane.ps1" {
-    It "writes agent-a's turn to its own lane exactly, and leaves agent-b's lane untouched" {
+    It "writes agent-a's turn to its own lane exactly, and leaves agent-b's lane untouched" -Tag Slow {
         $t = New-FakeTarget "writelane-a"
         & $script:initScript -RepoPath $t *>$null
         $laneA = Join-Path $t ".mailbox\agent-a.md"
@@ -1211,7 +1211,7 @@ Describe "write-lane.ps1" {
         (Get-Content -Raw $laneB) | Should -Be $laneBBefore
     }
 
-    It "writes agent-b's turn to its own lane exactly, and leaves agent-a's lane untouched" {
+    It "writes agent-b's turn to its own lane exactly, and leaves agent-a's lane untouched" -Tag Slow {
         $t = New-FakeTarget "writelane-b"
         & $script:initScript -RepoPath $t *>$null
         $laneA = Join-Path $t ".mailbox\agent-a.md"
@@ -1224,7 +1224,7 @@ Describe "write-lane.ps1" {
         (Get-Content -Raw $laneA) | Should -Be $laneABefore
     }
 
-    It "appends exactly one correctly-headed log entry at the exact tail, preserving prior content" {
+    It "appends exactly one correctly-headed log entry at the exact tail, preserving prior content" -Tag Slow {
         $t = New-FakeTarget "writelane-log"
         & $script:initScript -RepoPath $t *>$null
         $logPath = Join-Path $t ".mailbox\session.log.md"
@@ -1242,7 +1242,7 @@ Describe "write-lane.ps1" {
         $appended | Should -Match "^`n## (?<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z) agent-a`nSYNC #7`nbody text`n<!-- cocopilot:end \k<ts> agent-a -->`n\z"
     }
 
-    It "preserves a turn that does NOT already end in a newline (no forced trailing newline in the lane; log gets exactly one separator)" {
+    It "preserves a turn that does NOT already end in a newline (no forced trailing newline in the lane; log gets exactly one separator)" -Tag Slow {
         $t = New-FakeTarget "writelane-noeol"
         & $script:initScript -RepoPath $t *>$null
         $lanePath = Join-Path $t ".mailbox\agent-a.md"
@@ -1256,7 +1256,7 @@ Describe "write-lane.ps1" {
         $appended | Should -Match "^`n## (?<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z) agent-a`nSTATUS`nno trailing newline here`n<!-- cocopilot:end \k<ts> agent-a -->`n\z"
     }
 
-    It "preserves a turn that already ends in a newline (no doubled newline in lane or log)" {
+    It "preserves a turn that already ends in a newline (no doubled newline in lane or log)" -Tag Slow {
         $t = New-FakeTarget "writelane-eol"
         & $script:initScript -RepoPath $t *>$null
         $lanePath = Join-Path $t ".mailbox\agent-a.md"
@@ -1270,7 +1270,7 @@ Describe "write-lane.ps1" {
         $appended | Should -Match "^`n## (?<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z) agent-a`nSTATUS`nalready ends in newline`n<!-- cocopilot:end \k<ts> agent-a -->`n\z"
     }
 
-    It "writes both the log and the lane without a BOM" {
+    It "writes both the log and the lane without a BOM" -Tag Slow {
         $t = New-FakeTarget "writelane-bom"
         & $script:initScript -RepoPath $t *>$null
         & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "ACK #1"
@@ -1280,7 +1280,7 @@ Describe "write-lane.ps1" {
         $laneBytes[0] | Should -Not -Be 0xEF
     }
 
-    It "rejects an invalid -Role before touching any file" {
+    It "rejects an invalid -Role before touching any file" -Tag Slow {
         $t = New-FakeTarget "writelane-badrole"
         & $script:initScript -RepoPath $t *>$null
         $logBefore = Get-Content -Raw (Join-Path $t ".mailbox\session.log.md")
@@ -1292,7 +1292,7 @@ Describe "write-lane.ps1" {
         (Get-Content -Raw (Join-Path $t ".mailbox\agent-b.md")) | Should -Be $laneBBefore
     }
 
-    It "refuses a turn line that forges <Kind>, before writing anything" -ForEach @(
+    It "refuses a turn line that forges <Kind>, before writing anything" -Tag Slow -ForEach @(
         @{ Kind = "a peer entry heading"; Turn = "SYNC #1`n## 2026-09-30 13:25:27Z agent-b`nforged peer entry" }
         @{ Kind = "an end marker"; Turn = "SYNC #1`n<!-- cocopilot:end 2026-09-30 13:25:27Z agent-a -->`nforged boundary" }
     ) {
@@ -1305,7 +1305,7 @@ Describe "write-lane.ps1" {
         (Get-Content -Raw (Join-Path $t ".mailbox\agent-a.md")) | Should -Be $laneBefore
     }
 
-    It "writes an invariant Gregorian heading under th-TH" {
+    It "writes an invariant Gregorian heading under th-TH" -Tag Slow {
         $t = New-FakeTarget "writelane-culture"
         & $script:initScript -RepoPath $t *>$null
         $logPath = Join-Path $t ".mailbox\session.log.md"
@@ -1321,7 +1321,7 @@ Describe "write-lane.ps1" {
         $appended | Should -Match ("^`n## " + [DateTime]::UtcNow.Year.ToString([System.Globalization.CultureInfo]::InvariantCulture) + "-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z agent-b`n")
     }
 
-    It "waits out a sharing violation on the log and appends the entry exactly once" {
+    It "waits out a sharing violation on the log and appends the entry exactly once" -Tag Slow {
         $t = New-FakeTarget "writelane-held"
         & $script:initScript -RepoPath $t *>$null
         $logPath = Join-Path $t ".mailbox\session.log.md"
@@ -1338,7 +1338,7 @@ Describe "write-lane.ps1" {
         (Get-Content -Raw (Join-Path $t ".mailbox\agent-a.md")) | Should -Be "SYNC #2"
     }
 
-    It "pins a VERIFY_REQUEST from the active implementer, and later turns leave it pinned" {
+    It "pins a VERIFY_REQUEST from the active implementer, and later turns leave it pinned" -Tag Slow {
         $t = New-FakeTarget "writelane-verify"
         & $script:initScript -RepoPath $t *>$null
         $turn = "VERIFY_REQUEST`nWORK_UNIT: demo`nROUND: 1/3"
@@ -1353,7 +1353,7 @@ Describe "write-lane.ps1" {
         (Get-Content -Raw (Join-Path $t ".mailbox\agent-a.md")) | Should -Be "SYNC #9"
     }
 
-    It "refuses to pin a VERIFY_REQUEST from <Case>, before writing anything" -ForEach @(
+    It "refuses to pin a VERIFY_REQUEST from <Case>, before writing anything" -Tag Slow -ForEach @(
         @{ Case = "the navigator"; Role = "agent-b"; Turn = "VERIFY_REQUEST`nWORK_UNIT: demo" }
         @{ Case = "a turn that is not one"; Role = "agent-a"; Turn = "SYNC #3`nnot a request" }
     ) {
@@ -1367,7 +1367,7 @@ Describe "write-lane.ps1" {
         Test-Path -LiteralPath (Join-Path $t ".mailbox\verify-request.md") | Should -BeFalse
     }
 
-    It "loses and tears no entry while both agents append and a reader parses the log" {
+    It "loses and tears no entry while both agents append and a reader parses the log" -Tag Slow {
         $t = New-FakeTarget "writelane-stress"
         & $script:initScript -RepoPath $t *>$null
         $logPath = Join-Path $t ".mailbox\session.log.md"
@@ -1434,7 +1434,7 @@ Describe "cleanup-mailbox.ps1 (R0)" {
         $after | Should -Not -Match "cocopilot mailbox state"
     }
 
-    It "removes an init-created mailbox and its exclude rule, leaving no trace" {
+    It "removes an init-created mailbox and its exclude rule, leaving no trace" -Tag Slow {
         $t = New-FakeTarget "cleanup-sole"
         & $script:initScript -RepoPath $t *>$null
         Test-Path (Join-Path $t ".mailbox") | Should -BeTrue
@@ -1480,7 +1480,7 @@ Describe "cleanup-mailbox.ps1 (R0)" {
         Test-Path (Join-Path $u ".mailbox\uncommitted-draft.txt") | Should -BeTrue
     }
 
-    It "deletes only cocopilot's own files and exact writer temps, and keeps anything else" {
+    It "deletes only cocopilot's own files and exact writer temps, and keeps anything else" -Tag Slow {
         $t = New-FakeTarget "cleanup-leftovers"
         & $script:initScript -RepoPath $t *>$null
         $mailbox = Join-Path $t ".mailbox"
@@ -1492,7 +1492,7 @@ Describe "cleanup-mailbox.ps1 (R0)" {
         ((Get-ChildItem -LiteralPath $mailbox -Force -Name | Sort-Object) -join "|") | Should -Be "notes.tmp|user-notes.md"
     }
 
-    It "removes only its own exclude block and keeps the user's exclude lines" {
+    It "removes only its own exclude block and keeps the user's exclude lines" -Tag Slow {
         $t = New-FakeTarget "cleanup-exclude"
         $exclude = Join-Path $t ".git\info\exclude"
         [System.IO.File]::AppendAllText($exclude, "*.user-local`n", $script:utf8NoBom)
@@ -1505,7 +1505,7 @@ Describe "cleanup-mailbox.ps1 (R0)" {
         $after | Should -Match '(?m)^/scratch/$'
     }
 
-    It "keeps the shared exclude rule while another worktree still has a cocopilot mailbox" {
+    It "keeps the shared exclude rule while another worktree still has a cocopilot mailbox" -Tag Slow {
         # info/exclude lives in the common git dir, shared by every worktree.
         $main = New-FakeTarget "wt-main"
         [System.IO.File]::WriteAllText((Join-Path $main "app.txt"), "v1`n", $script:utf8NoBom)
@@ -1526,7 +1526,7 @@ Describe "cleanup-mailbox.ps1 (R0)" {
         (Get-Content -Raw (Join-Path $main ".git\info\exclude")) | Should -Not -Match "cocopilot mailbox"
     }
 
-    It "keeps the shared exclude rule for a sibling worktree at a non-ASCII path under an OEM console code page" {
+    It "keeps the shared exclude rule for a sibling worktree at a non-ASCII path under an OEM console code page" -Tag Slow {
         $main = New-FakeTarget "wt-oem-main"
         [System.IO.File]::WriteAllText((Join-Path $main "app.txt"), "v1`n", $script:utf8NoBom)
         git -C $main add app.txt 2>$null | Out-Null
@@ -1542,7 +1542,7 @@ Describe "cleanup-mailbox.ps1 (R0)" {
         $LASTEXITCODE | Should -Be 0
     }
 
-    It "shows a non-ASCII path exactly in its final git status under an OEM console code page" {
+    It "shows a non-ASCII path exactly in its final git status under an OEM console code page" -Tag Slow {
         $t = New-FakeTarget "cleanup-oem-status"
         git -C $t config core.quotePath false
         & $script:initScript -RepoPath $t *>$null
@@ -1577,7 +1577,7 @@ Describe "cleanup-mailbox.ps1 (R0)" {
 }
 
 Describe "cleanup-mailbox.ps1 -Recurse" {
-    It "cleans the root and every nested repo, ignoring .git/node_modules decoys" {
+    It "cleans the root and every nested repo, ignoring .git/node_modules decoys" -Tag Slow {
         $t = New-FakeTarget "recurse-basic"
         $child1 = New-FakeTarget "recurse-basic\child1"
         $child2 = New-FakeTarget "recurse-basic\child2"
@@ -1603,7 +1603,7 @@ Describe "cleanup-mailbox.ps1 -Recurse" {
         $output | Should -Match "No changes made \(preview or declined confirmation\):\s*0"
     }
 
-    It "-WhatIf leaves every discovered target's .mailbox and ignore rule untouched" {
+    It "-WhatIf leaves every discovered target's .mailbox and ignore rule untouched" -Tag Slow {
         $t = New-FakeTarget "recurse-whatif"
         $child = New-FakeTarget "recurse-whatif\child"
         & $script:initScript -RepoPath $t *>$null
@@ -1623,7 +1623,7 @@ Describe "cleanup-mailbox.ps1 -Recurse" {
         $output | Should -Match "No changes made \(preview or declined confirmation\):\s*2"
     }
 
-    It "never follows a reparse point - no cycle, no escape, and rejects a .mailbox that is itself a link" {
+    It "never follows a reparse point - no cycle, no escape, and rejects a .mailbox that is itself a link" -Tag Slow {
         $t = New-FakeTarget "recurse-junction"
         $child = New-FakeTarget "recurse-junction\child"
         & $script:initScript -RepoPath $t *>$null
@@ -1694,7 +1694,7 @@ Describe "cleanup-mailbox.ps1 -Recurse" {
         }
     }
 
-    It "continues past one target's failure and throws only after every target has been attempted" {
+    It "continues past one target's failure and throws only after every target has been attempted" -Tag Slow {
         $t = New-FakeTarget "recurse-partial-fail"
         $good = New-FakeTarget "recurse-partial-fail\good"
         $bad = New-FakeTarget "recurse-partial-fail\bad"
@@ -1731,7 +1731,7 @@ Describe "cleanup-mailbox.ps1 -Recurse" {
         Test-Path (Join-Path $copy ".mailbox\lane.example.md") | Should -BeTrue
     }
 
-    It "skips a foreign .mailbox, leaves it untouched and does not fail because of it" {
+    It "skips a foreign .mailbox, leaves it untouched and does not fail because of it" -Tag Slow {
         $t = New-FakeTarget "recurse-foreign"
         $ours = New-FakeTarget "recurse-foreign\ours"
         & $script:initScript -RepoPath $ours *>$null
@@ -2229,7 +2229,7 @@ Describe "install.ps1 + profile snippet" {
         $arguments | Should -Be "--model|gpt-6.1-sol|--effort|max|--context|long_context|--autopilot|--allow-all|extra-argument"
     }
 
-    It "suggests GPT-6.1 Sol for agent-b when both Sol versions are available" {
+    It "suggests GPT-6.1 Sol for agent-b when both Sol versions are available" -Tag Slow {
         $t = New-FakeTarget "start-default-sol-model"
         & $script:initScript -RepoPath $t *>$null
         Mock Get-CocopilotModelCatalog {
@@ -2452,7 +2452,7 @@ Describe "Unacknowledged history at launch and repair" {
         }
     }
 
-    It "cocopilot-start's auto-init leaves the cursors missing, so the first watch delivers a pending peer STOP" {
+    It "cocopilot-start's auto-init leaves the cursors missing, so the first watch delivers a pending peer STOP" -Tag Slow {
         $t = New-LegacyMailboxTarget "legacy-launch-profile"
         $snippet = Join-Path $script:repoRoot "profile\cocopilot.profile.ps1"
 
@@ -2468,7 +2468,7 @@ Describe "Unacknowledged history at launch and repair" {
         Test-Path (Join-Path $t ".mailbox\agent-b.cursor") | Should -BeFalse
     }
 
-    It "cocopilot-start's repair of a missing lane creates no cursor, so the first watch delivers a pending peer STOP" {
+    It "cocopilot-start's repair of a missing lane creates no cursor, so the first watch delivers a pending peer STOP" -Tag Slow {
         $t = New-FakeTarget "launch-repair-lane"
         & $script:initScript -RepoPath $t *>$null
         & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "INTERJECT #1 [STOP]`npending framed stop"
@@ -2489,7 +2489,7 @@ Describe "Unacknowledged history at launch and repair" {
         Test-Path (Join-Path $mailbox "agent-b.cursor") | Should -BeFalse
     }
 
-    It "start-agents.ps1 warns with the init command, then launches both agents without creating a cursor" {
+    It "start-agents.ps1 warns with the init command, then launches both agents without creating a cursor" -Tag Slow {
         $t = New-LegacyMailboxTarget "legacy-launch-start"
         $repoPath = (Resolve-Path -LiteralPath $t).Path
         Mock Start-Process
@@ -2528,7 +2528,7 @@ Describe "Unacknowledged history at launch and repair" {
 }
 
 Describe "start-agents.ps1 PowerShell 7.4 requirement" {
-    It "rejects Windows PowerShell as the agent shell (<_>)" -ForEach @("powershell.exe", "powershell_ise.exe") {
+    It "rejects Windows PowerShell as the agent shell (<_>)" -Tag Slow -ForEach @("powershell.exe", "powershell_ise.exe") {
         $shell = $_
         $t = New-FakeTarget ("start-reject-" + ($shell -replace '\.', '-'))
         & $script:initScript -RepoPath $t *>$null
@@ -2541,7 +2541,7 @@ Describe "start-agents.ps1 PowerShell 7.4 requirement" {
         Should -Invoke Start-Process -Times 0 -Exactly
     }
 
-    It "keeps the launch prompt one native argument when the profile selects Legacy argument passing" {
+    It "keeps the launch prompt one native argument when the profile selects Legacy argument passing" -Tag Slow {
         # pwsh itself records the native command line it receives, so this
         # crosses the real process boundary without an extra dependency.
         $t = New-FakeTarget "start-native-argv"
@@ -2610,7 +2610,7 @@ Describe "start-agents.ps1 launch command and CLI resolution" {
         }
     }
 
-    It "keeps the launch command small with long paths and renders the same prompt in the new window" {
+    It "keeps the launch command small with long paths and renders the same prompt in the new window" -Tag Slow {
         # Long but valid paths: a 220-character install path, a 180-character
         # target and a 220-character context root.
         $base = Join-Path $TestDrive "lp"
@@ -2657,7 +2657,7 @@ Describe "start-agents.ps1 launch command and CLI resolution" {
         $received[9] | Should -BeExactly $expectedPrompt
     }
 
-    It "launches and discovers through the copilot on PATH, never a same-name function" {
+    It "launches and discovers through the copilot on PATH, never a same-name function" -Tag Slow {
         $bin = Join-Path $TestDrive "stock-bin"
         New-Item -ItemType Directory -Force -Path $bin | Out-Null
         $stockCopilot = Join-Path $bin "copilot.ps1"
@@ -2726,7 +2726,7 @@ if ($args.Count -ge 2 -and $args[0] -eq "completion" -and $args[1] -eq "bash") {
         }
     }
 
-    It "stops before model discovery or any launch when no copilot executable or script is on PATH" {
+    It "stops before model discovery or any launch when no copilot executable or script is on PATH" -Tag Slow {
         $t = New-FakeTarget "start-no-stock-cli"
         & $script:initScript -RepoPath $t *>$null
         Mock Get-CocopilotModelCatalog
@@ -2747,7 +2747,7 @@ if ($args.Count -ge 2 -and $args[0] -eq "completion" -and $args[1] -eq "bash") {
         Should -Invoke Start-Process -Times 0 -Exactly
     }
 
-    It "launches explicit commands as given without needing the stock CLI" {
+    It "launches explicit commands as given without needing the stock CLI" -Tag Slow {
         $t = New-FakeTarget "start-expert-no-stock"
         & $script:initScript -RepoPath $t *>$null
         $launches = [System.Collections.Generic.List[object]]::new()
@@ -2799,7 +2799,7 @@ Describe "Write-MailboxJson (R5)" {
         @(Get-Content $path).Count | Should -Be 1
     }
 
-    It "fails within its retry bound on a held target, keeping the target and cleaning up its temp file" {
+    It "fails within its retry bound on a held target, keeping the target and cleaning up its temp file" -Tag Slow {
         $t = New-FakeTarget "json-locked"
         & $script:initScript -RepoPath $t *>$null
         $path = Join-Path $t ".mailbox\implementer.json"
@@ -2857,7 +2857,7 @@ Describe "Mailbox I/O and log framing helpers" {
     }
 
     Context "Write-CocopilotFileAtomic" {
-        It "never shows concurrent reader processes a missing or partial file, and never fails the writer" {
+        It "never shows concurrent reader processes a missing or partial file, and never fails the writer" -Tag Slow {
             $dir = Join-Path $TestDrive "atomic-stress"
             New-Item -ItemType Directory -Force -Path $dir | Out-Null
             $path = Join-Path $dir "implementer.json"
@@ -2940,7 +2940,7 @@ Describe "Mailbox I/O and log framing helpers" {
     }
 
     Context "Read-CocopilotSharedText and Add-CocopilotLogText" {
-        It "waits for an exclusive holder to release the file before reading" {
+        It "waits for an exclusive holder to release the file before reading" -Tag Slow {
             $path = Join-Path $TestDrive "held-read.md"
             [System.IO.File]::WriteAllText($path, "content", $script:utf8NoBom)
             $holder = Start-FileHolder -Path $path -Milliseconds 1000
@@ -2951,7 +2951,7 @@ Describe "Mailbox I/O and log framing helpers" {
             } finally { $holder | Receive-Job -Wait -AutoRemoveJob | Out-Null }
         }
 
-        It "appends exactly once after an exclusive holder releases the log" {
+        It "appends exactly once after an exclusive holder releases the log" -Tag Slow {
             $path = Join-Path $TestDrive "held-append.md"
             [System.IO.File]::WriteAllText($path, "start", $script:utf8NoBom)
             $holder = Start-FileHolder -Path $path -Milliseconds 1000
