@@ -437,9 +437,13 @@ prompts/
                                (rendered per role, banner-driven)
   verifier.md                 read-only fresh-eyes role
 scripts/
-  _common.ps1                 banner + role-prompt rendering, mailbox I/O
-                               (atomic replace, framed log entries, cursors,
-                               ownership lock, handoff baselines)
+  _common.ps1                 loads the six helper files below
+  _io.ps1                     quoting, stamps, atomic + shared file I/O, git runner
+  _mailbox.ps1                mailbox file names and checks, ownership lock
+  _log.ps1                    framed log entries, entry parsing, cursors
+  _ownership.ps1              workspace fingerprints, manifests, baselines
+  _exclude.ps1                git-local exclude rule for .mailbox/
+  _launch.ps1                 init command, names, quoting, banner + prompts
   _models.ps1                 account model discovery, picker, argument helpers
   init-mailbox.ps1            create <RepoPath>/.mailbox/*
   list-models.ps1             show available models + supported settings
