@@ -6,6 +6,13 @@
     cursors. _common.ps1 dot-sources this file; don't run it directly.
 #>
 
+function Get-CocopilotLogMarker {
+    # The first words of every session log: init-mailbox.ps1 starts a new
+    # log with them, and Get-CocopilotMailboxFileCheck recognizes a
+    # cocopilot log by them.
+    return "# session log - write-once history"
+}
+
 function Add-CocopilotLogText {
     <#
     .SYNOPSIS

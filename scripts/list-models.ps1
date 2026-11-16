@@ -14,8 +14,9 @@
     warning, and a missing CLI is an error.
 
     If account-aware discovery is unavailable (for example, Node.js is not on
-    PATH), falls back to the model IDs advertised by `copilot completion bash`
-    and labels the missing availability/capability data as unknown.
+    PATH) or does not finish within 60 seconds, falls back to the model IDs
+    advertised by `copilot completion bash` and labels the missing
+    availability/capability data as unknown.
 
 .PARAMETER Raw
     Return reusable model descriptor objects instead of a formatted table.

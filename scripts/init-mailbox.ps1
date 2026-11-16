@@ -134,11 +134,7 @@ $sessionLogPath = Join-Path $mailboxDir "session.log.md"
 $implementerTemplate = Join-Path $cocopilotRoot ".mailbox\implementer.example.json"
 $laneTemplate = Join-Path $cocopilotRoot ".mailbox\lane.example.md"
 
-$isGitRepo = $false
-try {
-    $null = git -C $RepoPath rev-parse --is-inside-work-tree 2>$null
-    $isGitRepo = ($LASTEXITCODE -eq 0)
-} catch { $isGitRepo = $false }
+$isGitRepo = Test-CocopilotGitRepository -Path $RepoPath
 
 if ($isGitRepo) {
     $tracked = @(Get-CocopilotTrackedMailboxPaths -RepoPath $RepoPath)
@@ -210,11 +206,14 @@ if ($isGitRepo) {
 
 $head = if ($isGitRepo) { "0000000000000000000000000000000000000000" } else { "non-git-root" }
 if ($isGitRepo) {
+    # A repository without commits makes rev-parse exit non-zero, so the zero
+    # SHA stays, silently: it is the defined head for that state. The catch
+    # only handles a failure to run git at all.
     try {
         $gitHead = git -C $RepoPath rev-parse HEAD 2>$null
         if ($LASTEXITCODE -eq 0 -and $gitHead) { $head = $gitHead.Trim() }
     } catch {
-        Write-Warning "Could not resolve git HEAD for $RepoPath (no commits yet?); using zero SHA."
+        Write-Warning "Could not run git to resolve HEAD for $RepoPath ($($_.Exception.Message)); using the zero SHA."
     }
 }
 
@@ -317,7 +316,7 @@ $stamp = Get-CocopilotUtcStamp
 $logCreated = $false
 if (-not (Test-Path -LiteralPath $sessionLogPath)) {
     $initBody = "- repo: $RepoPath`n- initial owner: $Owner`n- generation: $([Guid]::NewGuid().ToString('N'))"
-    $logText = "# session log - write-once history (see cocopilot's COLLABORATION.md; never edit or delete entries)`n" +
+    $logText = (Get-CocopilotLogMarker) + " (see cocopilot's COLLABORATION.md; never edit or delete entries)`n" +
         (New-CocopilotLogEntryText -Stamp $stamp -Role init -Body $initBody)
     New-CocopilotFileAtomic -Path $sessionLogPath -Text $logText
     $logCreated = $true

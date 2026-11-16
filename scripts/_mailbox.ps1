@@ -60,8 +60,11 @@ function Enter-CocopilotOwnershipLock {
         The lock file is opened exclusively (FileShare.None) and removed when
         its handle is released. A lock file that a crashed process left
         behind holds nothing: the next update opens and reuses it. While
-        another update holds the lock, opening is retried for at most
-        -RetryMilliseconds, on sharing violations only.
+        another update holds the lock, or its released lock file is still
+        being deleted, opening is retried for at most -RetryMilliseconds:
+        Windows reports the first as a sharing violation and the second as
+        access denied (see Test-CocopilotHeldDestination). Any other error,
+        and either one after the deadline, surfaces with the path named.
     #>
     param(
         [Parameter(Mandatory)][string]$MailboxDir,
@@ -75,9 +78,14 @@ function Enter-CocopilotOwnershipLock {
             return [System.IO.FileStream]::new($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite,
                 [System.IO.FileShare]::None, 1, [System.IO.FileOptions]::DeleteOnClose)
         } catch {
-            if (-not (Test-CocopilotSharingViolation -Exception $_.Exception)) { throw }
+            if (-not (Test-CocopilotHeldDestination -Exception $_.Exception)) { throw }
             if ([DateTime]::UtcNow -ge $deadline) {
-                throw "Another ownership update still holds '$lockPath'; nothing was changed. Try again."
+                if (Test-CocopilotSharingViolation -Exception $_.Exception) {
+                    throw "Another ownership update still holds '$lockPath'; nothing was changed. Try again."
+                }
+                $cause = Get-CocopilotInnerException -Exception $_.Exception
+                throw ("Opening the ownership lock '$lockPath' kept failing because access was denied (a released lock file " +
+                    "still being deleted, or missing permissions): $($cause.Message) Nothing was changed.")
             }
             Start-Sleep -Milliseconds 50
         }
@@ -149,7 +157,7 @@ function Get-CocopilotMailboxFileCheck {
             }
         }
         "session.log.md" {
-            if (-not $text.StartsWith("# session log - write-once history", [System.StringComparison]::Ordinal)) {
+            if (-not $text.StartsWith((Get-CocopilotLogMarker), [System.StringComparison]::Ordinal)) {
                 return [pscustomobject]@{ State = "Foreign"; Reason = "session.log.md lacks the cocopilot log marker" }
             }
         }

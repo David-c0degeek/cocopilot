@@ -43,6 +43,9 @@ function cocopilot-start {
     # repo (see init-mailbox.ps1 -AllowNonGit). -Name/-SessionName names both
     # agent windows/tabs "<name> - agent a/b". Assign models/settings with
     # the typed AgentA*/AgentB* parameters; omitted models open the picker.
+    # Advanced, like every named cocopilot command: a mistyped switch is an
+    # error instead of being silently ignored.
+    [CmdletBinding()]
     param(
         [string]$RepoPath = (Get-Location).Path,
         [string]$ContextRoot,
@@ -84,11 +87,12 @@ function cocopilot-models {
     # Shows models available to the current Copilot account plus each model's
     # supported effort/context settings. -Raw returns reusable descriptor
     # objects; -NoFallback requires exact account-aware discovery.
+    [CmdletBinding()]
     param(
         [switch]$Raw,
         [switch]$NoFallback
     )
-    & (Join-Path $script:CocopilotRoot "scripts\list-models.ps1") @PSBoundParameters
+    & (Join-Path $script:CocopilotRoot "scripts\list-models.ps1") -Raw:$Raw -NoFallback:$NoFallback
 }
 
 function cocopilot-prompt {
@@ -125,21 +129,29 @@ function cocopilot-prompt {
 
 function cocopilot-cleanup {
     # Removes cocopilot's .mailbox/ files and ignore rule from
-    # $RepoPath. Supports -WhatIf to preview. With -Recurse, treats
-    # $RepoPath as a search root and cleans up every repository with a
-    # .mailbox/ found at or below it (e.g. run in C:\Repos to clean every
-    # paired repo underneath).
+    # $RepoPath. -WhatIf previews and -Confirm asks before each removal.
+    # With -Recurse, treats $RepoPath as a search root and cleans up every
+    # repository with a .mailbox/ found at or below it (e.g. run in C:\Repos
+    # to clean every paired repo underneath).
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [string]$RepoPath = (Get-Location).Path,
-        [switch]$Recurse,
-        [switch]$WhatIf
+        [switch]$Recurse
     )
-    & (Join-Path $script:CocopilotRoot "scripts\cleanup-mailbox.ps1") -RepoPath $RepoPath -Recurse:$Recurse -WhatIf:$WhatIf
+    # cleanup-mailbox.ps1 asks ShouldProcess itself. Only an explicitly given
+    # -WhatIf or -Confirm (also :$false) is passed on, so an omitted one
+    # never overrides the caller's $WhatIfPreference or $ConfirmPreference.
+    $safetySwitches = @{}
+    if ($PSBoundParameters.ContainsKey("WhatIf")) { $safetySwitches.WhatIf = $PSBoundParameters["WhatIf"] }
+    if ($PSBoundParameters.ContainsKey("Confirm")) { $safetySwitches.Confirm = $PSBoundParameters["Confirm"] }
+    & (Join-Path $script:CocopilotRoot "scripts\cleanup-mailbox.ps1") -RepoPath $RepoPath -Recurse:$Recurse @safetySwitches
 }
 
 function cocopilot-update {
     # git pull + re-register: reruns install.ps1 on this install. (A new
     # shell — or dot-sourcing the snippet at the global scope — picks up
     # any changed functions; a dot-source inside this function would not.)
+    [CmdletBinding()]
+    param()
     & (Join-Path $script:CocopilotRoot "install.ps1") -InstallDir $script:CocopilotRoot
 }

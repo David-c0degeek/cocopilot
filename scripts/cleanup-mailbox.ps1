@@ -83,9 +83,6 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-# Expected non-zero git exits are read from $LASTEXITCODE, whatever the
-# caller's profile sets here.
-$PSNativeCommandUseErrorActionPreference = $false
 
 . (Join-Path $PSScriptRoot "_common.ps1")
 
@@ -138,11 +135,7 @@ function Invoke-SingleMailboxCleanup {
     $gitignorePath = Join-Path $RepoPath ".gitignore"
     $anyChangeMade = $false
 
-    $isGitRepo = $false
-    try {
-        $null = git -C $RepoPath rev-parse --is-inside-work-tree 2>$null
-        $isGitRepo = ($LASTEXITCODE -eq 0)
-    } catch { $isGitRepo = $false }
+    $isGitRepo = Test-CocopilotGitRepository -Path $RepoPath
 
     if ($isGitRepo) {
         $tracked = @(Get-CocopilotTrackedMailboxPaths -RepoPath $RepoPath)

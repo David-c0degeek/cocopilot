@@ -27,12 +27,7 @@ function Get-CocopilotInitCommand {
         [Parameter(Mandatory)][string]$InitScript
     )
 
-    $isGitRepo = $false
-    try {
-        $null = git -C $RepoPath rev-parse --is-inside-work-tree 2>$null
-        $isGitRepo = ($LASTEXITCODE -eq 0)
-    } catch { $isGitRepo = $false }
-
+    $isGitRepo = Test-CocopilotGitRepository -Path $RepoPath
     $allowNonGitFlag = if ($isGitRepo) { "" } else { " -AllowNonGit" }
     return "& $(ConvertTo-SingleQuoted $InitScript) -RepoPath $(ConvertTo-SingleQuoted $RepoPath)$allowNonGitFlag"
 }

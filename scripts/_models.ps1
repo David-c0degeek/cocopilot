@@ -256,7 +256,18 @@ function ConvertFrom-CocopilotModelJson {
 }
 
 function Invoke-CocopilotSdkModelQuery {
-    param([string]$CopilotCommand = "copilot")
+    <#
+    .SYNOPSIS
+        Lists the account's enabled models through the SDK bundled with the
+        Copilot CLI, run by Node.js. A query that does not finish within
+        -TimeoutSeconds is stopped, the processes it started are told to stop
+        too, and it throws, so Get-CocopilotModelCatalog can fall back.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$CopilotCommand = "copilot",
+        [ValidateRange(1, 3600)][int]$TimeoutSeconds = 60
+    )
 
     $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue
     if (-not $node) {
@@ -271,10 +282,7 @@ function Invoke-CocopilotSdkModelQuery {
     }
 
     $sdkUri = ([Uri](Resolve-Path -LiteralPath $sdkPath).Path).AbsoluteUri
-    $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ("cocopilot-models-" + [Guid]::NewGuid().ToString("N"))
-    $scriptPath = "$tempBase.mjs"
-    $stdoutPath = "$tempBase.stdout"
-    $stderrPath = "$tempBase.stderr"
+    $scriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("cocopilot-models-" + [Guid]::NewGuid().ToString("N") + ".mjs")
     $nodeScript = @'
 const [sdkUrl, cliPath] = process.argv.slice(2);
 const { CopilotClient, RuntimeConnection } = await import(sdkUrl);
@@ -293,17 +301,48 @@ try {
 
     try {
         [System.IO.File]::WriteAllText($scriptPath, $nodeScript, [System.Text.UTF8Encoding]::new($false))
-        $previousErrorActionPreference = $ErrorActionPreference
+
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new($node.Source)
+        foreach ($argument in @($scriptPath, $sdkUri, $copilotExecutable)) { $startInfo.ArgumentList.Add($argument) }
+        $startInfo.UseShellExecute = $false
+        # Node gets its own, already closed stdin: an inherited pipe can leave
+        # it waiting.
+        $startInfo.RedirectStandardInput = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $startInfo.StandardErrorEncoding = [System.Text.UTF8Encoding]::new($false)
+        $process = [System.Diagnostics.Process]::Start($startInfo)
         try {
-            $ErrorActionPreference = "Continue"
-            & $node.Source $scriptPath $sdkUri $copilotExecutable 1> $stdoutPath 2> $stderrPath
-            $exitCode = $LASTEXITCODE
+            $process.StandardInput.Close()
+            # Both streams are read at once, so a full pipe cannot stall Node.
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+                # Asks Windows to stop Node and every process it started, such
+                # as the CLI runtime, and returns before they are gone. For a
+                # query that exited just after the deadline it does nothing; a
+                # process it cannot stop makes it throw. Only Node's own exit
+                # is confirmed below.
+                $process.Kill($true)
+                if (-not $process.WaitForExit(5000)) {
+                    throw ("Copilot SDK model query did not finish within $TimeoutSeconds seconds, and Node.js " +
+                        "(process $($process.Id)) was still running 5 seconds after it was told to stop.")
+                }
+                throw "Copilot SDK model query did not finish within $TimeoutSeconds seconds; it was stopped."
+            }
+            # Node has exited, so its output closes, unless a process it
+            # started still holds it open.
+            if (-not [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 5000)) {
+                throw "Copilot SDK model query exited, but its output did not close within 5 seconds."
+            }
+            $exitCode = $process.ExitCode
+            $stdout = $stdoutTask.Result
+            $stderr = $stderrTask.Result
         } finally {
-            $ErrorActionPreference = $previousErrorActionPreference
+            $process.Dispose()
         }
 
-        $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
-        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
         if ($exitCode -ne 0) {
             throw "Copilot SDK model query failed (exit $exitCode): $($stderr.Trim())"
         }
@@ -321,10 +360,8 @@ try {
         }
         return @($descriptors)
     } finally {
-        foreach ($path in @($scriptPath, $stdoutPath, $stderrPath)) {
-            if (Test-Path -LiteralPath $path) {
-                Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-            }
+        if (Test-Path -LiteralPath $scriptPath) {
+            Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
         }
     }
 }

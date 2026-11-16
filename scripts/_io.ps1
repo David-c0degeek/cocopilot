@@ -41,11 +41,16 @@ function Test-CocopilotSharingViolation {
 function Test-CocopilotHeldDestination {
     <#
     .SYNOPSIS
-        True for the errors a rename over a destination that another process
-        holds open raises on Windows: a sharing violation, or ACCESS_DENIED
-        (0x80070005), which File.Move with overwrite reports even when the
-        holder allows delete sharing. Only Write-CocopilotFileAtomic's rename
-        uses this; every other operation retries sharing violations only.
+        True for the errors Windows raises while another process holds a
+        file for a moment and the caller needs it whole: a sharing
+        violation, or ACCESS_DENIED (0x80070005). File.Move with overwrite
+        reports ACCESS_DENIED for a destination that is held open, even when
+        the holder allows delete sharing. Opening a DeleteOnClose file while
+        its released handle is still being deleted reports it too
+        (DeleteFileW remarks). Write-CocopilotFileAtomic's rename and
+        Enter-CocopilotOwnershipLock use this; every other operation retries
+        sharing violations only. Callers retry it only until a deadline, so
+        a lasting permission problem still surfaces.
     #>
     param([Parameter(Mandatory)][System.Exception]$Exception)
 
@@ -240,6 +245,24 @@ function Invoke-CocopilotGit {
     } finally {
         $process.Dispose()
     }
+}
+
+function Test-CocopilotGitRepository {
+    <#
+    .SYNOPSIS
+        True when git rev-parse --is-inside-work-tree succeeds in $Path, so
+        git treats it as part of a repository. False otherwise, also when
+        git itself cannot run: callers then treat $Path as a folder outside
+        git, as -AllowNonGit describes.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    try {
+        $result = Invoke-CocopilotGit -WorkTree $Path -Arguments @("rev-parse", "--is-inside-work-tree") -AllowedExitCodes @(0..255)
+    } catch {
+        return $false
+    }
+    return $result.ExitCode -eq 0
 }
 
 function Read-CocopilotTextFile {

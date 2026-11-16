@@ -48,7 +48,7 @@ registered cocopilot in your Windows PowerShell profile, delete that `# >>> coco
 | `cocopilot-start [-RepoPath] [-Name] [-AgentAModel] [-AgentBModel] […]`            | Inits the mailbox, lets you assign a model/settings to each role when omitted, and opens both named agent tabs. Defaults to the current directory.                                                                                          |
 | `cocopilot-models [-Raw] [-NoFallback]`                                            | Shows the models available to your Copilot account plus supported effort/context settings and token limits.                                                                                                                                 |
 | `cocopilot-prompt -Agent a\|b\|verifier [-RepoPath] [-ContextRoot] [-AllowNonGit]` | Copies that role's paste-ready (re)start prompt to the clipboard — for crashed windows, manual role adds, or a fresh verifier session. Roles `a` and `b` init a missing mailbox; `verifier` never does and needs a pinned `VERIFY_REQUEST`. |
-| `cocopilot-cleanup [-RepoPath] [-Recurse] [-WhatIf]`                               | Removes cocopilot's `.mailbox\` files and ignore rule when you're done. `-Recurse` cleans every paired repo under `-RepoPath`.                                                                                                              |
+| `cocopilot-cleanup [-RepoPath] [-Recurse] [-WhatIf] [-Confirm]`                    | Removes cocopilot's `.mailbox\` files and ignore rule when you're done. `-Recurse` cleans every paired repo under `-RepoPath`. `-WhatIf` previews; `-Confirm` asks before each removal.                                                     |
 | `cocopilot-update`                                                                 | `git pull` + re-register (reruns the installer).                                                                                                                                                                                            |
 | `copilot-opus` / `copilot-sol` / `copilot-terra`                                   | Plain `copilot` launchers with cocopilot's default model/flags.                                                                                                                                                                             |
 
@@ -219,8 +219,9 @@ Shows the current account's enabled models with supported reasoning effort level
 limits, maximum output size, capability category, and price category. The launcher uses this same catalog for its
 numbered Agent A/Agent B picker, so unsupported effort/context combinations are rejected before tabs are opened.
 
-Account-aware discovery uses the SDK bundled with the installed Copilot CLI when Node.js is on PATH. If that optional
-path is unavailable, the command warns and falls back to model IDs advertised by `copilot completion bash`; account
+Account-aware discovery uses the SDK bundled with the installed Copilot CLI when Node.js is on PATH. A query that does not
+finish within 60 seconds is stopped, and the processes it started are told to stop too. If that optional path is
+unavailable or stopped, the command warns and falls back to model IDs advertised by `copilot completion bash`; account
 availability and per-model settings are then shown as `unknown`, and Copilot itself remains the final validator.
 `-NoFallback` makes exact account discovery mandatory, while `-Raw` returns reusable descriptor objects instead of a
 table. Node.js is not required when models are supplied explicitly and is not required to launch the agents. Discovery
@@ -385,7 +386,7 @@ refuses a cocopilot install (by path or templates), tracked content under `.mail
 With `-Recurse`, the walk never descends into a directory named `.git` or `node_modules`, and never follows a reparse
 point (symbolic link, junction, or mount point) — so a junction can't create a traversal cycle back up the tree or walk
 the search outside the requested root. A `.mailbox/` that is itself a reparse point is rejected the same way, in both
-`-Recurse` discovery and the single-target path — cocopilot never creates it that way, and `-Recurse -Force` must never
+`-Recurse` discovery and the single-target path — cocopilot never creates it that way, and `-Recurse` must never
 be pointed through a link to an arbitrary, externally-controlled target. A cocopilot install, found by path or by its
 templates, is reported as a discovery issue, never attempted as a target. A `.mailbox/` that isn't cocopilot's is
 skipped and listed in the summary, never touched. A directory that can't be enumerated is recorded as a discovery issue
@@ -454,7 +455,7 @@ scripts/
   render-prompt.ps1           print a role prompt for manual paste
   cleanup-mailbox.ps1         remove cocopilot's footprint from a target
 tests/
-  Cocopilot.Tests.ps1         Pester 5 suite (215 tests, pwsh 7.4+)
+  Cocopilot.Tests.ps1         Pester 5 suite (225 tests, pwsh 7.4+)
 ```
 
 The real `.mailbox/` state is created **inside each target repo** (git-ignored there); cocopilot's own repo only tracks
@@ -462,23 +463,26 @@ the two `*.example.*` templates.
 
 ## Tests
 
-215 black-box Pester 5 tests cover init, git-local ignore rules (including non-ASCII paths under an OEM console code
+225 black-box Pester 5 tests cover init, git-local ignore rules (including non-ASCII paths under an OEM console code
 page), watcher wake/no-wake behavior, lossless log delivery
 (cursors, acknowledgement tokens, redelivery, labelled legacy and incomplete entries, multi-byte offsets), framed and
 exclusive log appends under concurrent writers and readers, whole-file replacement that concurrent readers never see
 missing or partial, culture-independent timestamps, the pinned `VERIFY_REQUEST`, ownership handoffs (computed
 manifests including nested repositories, baselines kept across `-Force` and replaced only by `-AcknowledgeHistory`,
-epochs, the ownership lock, concurrent accepts, partial-capture refusal), own-lane writes and append-only logging, safe
+epochs, the ownership lock (also while a released lock file is still being deleted), concurrent accepts,
+partial-capture refusal), own-lane writes and append-only logging, safe
 cleanup (single and recursive, foreign-mailbox and cocopilot-install protection), shared role-template rendering for
 every role, non-git workspace recovery,
 unacknowledged history that no launch, mailbox repair or re-run of init skips (a pending peer STOP is still delivered;
 only `-AcknowledgeHistory` counts history as handled), the launch-time warning for a mailbox without delivery cursors,
 session-name/window-title helpers, Windows Terminal command-line quoting, the PowerShell 7.4 requirement and native
 launch-argument passing, bounded launch commands with in-window prompt rendering, stock Copilot CLI resolution by path
-(never a profile function), npm-installed Copilot resolution, model catalog parsing and capability mapping, numbered
+(never a profile function), npm-installed Copilot resolution, model catalog parsing and capability mapping, an account
+model query that is stopped when it does not finish, numbered
 model selection with the strongest-effort default, supported effort/context validation, independent Agent A/Agent B
-argument generation, the profile/installer command surface (including empty profiles and the read-only verifier
-prompt), and `Get-Help` for every user-facing script.
+argument generation, the profile/installer command surface (including empty profiles, the read-only verifier
+prompt, mistyped switches that every named command refuses, and `-WhatIf`/`-Confirm` passed through
+`cocopilot-cleanup`), and `Get-Help` for every user-facing script.
 
 **Prerequisite:** Pester 5 for pwsh. pwsh can also see the inbox Pester 3.4 from Windows PowerShell, which is too old:
 
@@ -493,8 +497,8 @@ Run fail-closed from the repo root (copy/paste as-is):
 pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw "Pester 5 required" }; $c = New-PesterConfiguration; $c.Run.Path = "tests"; $c.Run.Exit = $true; Invoke-Pester -Configuration $c'
 ```
 
-For quick feedback while you work, run the fast subset. It runs the 112 tests without the `Slow` tag and skips the
-other 103 tests. It never replaces the full run above, which stays the check before any commit.
+For quick feedback while you work, run the fast subset. It runs the 116 tests without the `Slow` tag and skips the
+other 109 tests. It never replaces the full run above, which stays the check before any commit.
 
 ```powershell
 # the full-run command plus one filter line

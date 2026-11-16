@@ -798,6 +798,30 @@ Describe "handoff.ps1 and handoff baselines" {
             param([Parameter(Mandatory)][string]$RepoPath)
             return Get-Content -Raw (Join-Path $RepoPath ".mailbox\implementer.json")
         }
+
+        function Start-DeletePendingHolder {
+            # Keeps $Path delete-pending in another process for $Milliseconds,
+            # as when an ownership-lock holder releases its DeleteOnClose file
+            # while a second handle still has it open. Returns only once the
+            # file is delete-pending.
+            param([Parameter(Mandatory)][string]$Path, [int]$Milliseconds = 1000)
+            $pendingSignal = Join-Path $TestDrive ("pending-{0}.signal" -f [Guid]::NewGuid().ToString("N"))
+            $job = Start-Job -ScriptBlock {
+                param($path, $signal, $ms)
+                $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+                $deleting = [System.IO.FileStream]::new($path, 'OpenOrCreate', 'ReadWrite', $share, 1, [System.IO.FileOptions]::DeleteOnClose)
+                $holding = [System.IO.FileStream]::new($path, 'Open', 'ReadWrite', $share)
+                $deleting.Dispose()
+                try {
+                    [System.IO.File]::WriteAllText($signal, "")
+                    Start-Sleep -Milliseconds $ms
+                } finally { $holding.Dispose() }
+            } -ArgumentList $Path, $pendingSignal, $Milliseconds
+            $deadline = [DateTime]::UtcNow.AddSeconds(30)
+            while (-not (Test-Path -LiteralPath $pendingSignal) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
+            Test-Path -LiteralPath $pendingSignal | Should -BeTrue -Because "the holder must make the lock file delete-pending first"
+            return $job
+        }
     }
 
     It "records a verifiable baseline at init" -Tag Slow {
@@ -1058,6 +1082,33 @@ Describe "handoff.ps1 and handoff baselines" {
         $record.owner_model | Should -Be "claude-opus-5.5"
         $record.epoch | Should -Be 1
         Test-Path -LiteralPath $lockPath | Should -BeFalse
+    }
+
+    It "waits while a released lock file is still being deleted, then takes the lock" -Tag Slow {
+        $mailbox = Join-Path $TestDrive "lock-delete-pending"
+        New-Item -ItemType Directory -Force -Path $mailbox | Out-Null
+        $holder = Start-DeletePendingHolder -Path (Join-Path $mailbox "implementer.lock") -Milliseconds 1000
+        try {
+            $lock = Enter-CocopilotOwnershipLock -MailboxDir $mailbox -RetryMilliseconds 10000
+            $lock.Dispose()
+        } finally {
+            $holder | Receive-Job -Wait -AutoRemoveJob | Out-Null
+        }
+        Test-Path -LiteralPath (Join-Path $mailbox "implementer.lock") | Should -BeFalse
+    }
+
+    It "names the lock file and the denied access when a pending delete outlasts the deadline" -Tag Slow {
+        $mailbox = Join-Path $TestDrive "lock-delete-pending-deadline"
+        New-Item -ItemType Directory -Force -Path $mailbox | Out-Null
+        $holder = Start-DeletePendingHolder -Path (Join-Path $mailbox "implementer.lock") -Milliseconds 4000
+        try {
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
+            { Enter-CocopilotOwnershipLock -MailboxDir $mailbox -RetryMilliseconds 500 } |
+                Should -Throw "*implementer.lock*access was denied*nothing was changed*"
+            $timer.Elapsed.TotalMilliseconds | Should -BeGreaterOrEqual 500 -Because "the denied open is retried until the deadline"
+        } finally {
+            $holder | Receive-Job -Wait -AutoRemoveJob | Out-Null
+        }
     }
 
     It "gives a record from an older cocopilot a baseline only with init -AcknowledgeHistory" -Tag Slow {
@@ -2205,12 +2256,184 @@ esac
             $Message -match "SDK unavailable for test" -and $Message -notmatch "\{0\}"
         }
     }
+
+    It "surfaces a timed-out account query with -NoFallback instead of falling back" {
+        Mock Invoke-CocopilotSdkModelQuery { throw "Copilot SDK model query did not finish within 60 seconds; it was stopped." }
+        Mock Get-CocopilotAdvertisedModelCatalog { throw "the fallback must not run" }
+
+        { Get-CocopilotModelCatalog -CopilotCommand "copilot-test" -NoFallback } | Should -Throw "*did not finish within 60 seconds*"
+
+        Should -Invoke Get-CocopilotAdvertisedModelCatalog -Times 0 -Exactly
+    }
+
+    Context "account query through Node.js with a synthetic SDK" {
+        BeforeAll {
+            $script:nodeForTests = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+
+            function New-StubCopilotSdk {
+                # Stands in for the SDK bundled with the CLI; it never starts a
+                # Copilot runtime. listModels() runs $ListModelsBody.
+                param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$ListModelsBody)
+                $directory = Join-Path $TestDrive $Name
+                New-Item -ItemType Directory -Force -Path $directory | Out-Null
+                $module = @(
+                    'import { spawn } from "node:child_process";'
+                    'import { writeFileSync } from "node:fs";'
+                    'export const RuntimeConnection = { forStdio: (options) => options };'
+                    'export class CopilotClient {'
+                    '  constructor(options) { this.options = options; }'
+                    '  async start() {}'
+                    "  async listModels() { $ListModelsBody }"
+                    '  async stop() {}'
+                    '}'
+                ) -join "`n"
+                $path = Join-Path $directory "index.mjs"
+                [System.IO.File]::WriteAllText($path, $module + "`n", $script:utf8NoBom)
+                return $path
+            }
+        }
+
+        BeforeEach {
+            Mock Get-CocopilotCliVersion { "1.0.0" }
+            Mock Get-CocopilotExecutablePath { "C:\stub\copilot.exe" }
+        }
+
+        It "returns the models a healthy SDK lists" -Tag Slow {
+            if (-not $script:nodeForTests) { Set-ItResult -Skipped -Because "Node.js is not on PATH" }
+            $sdk = New-StubCopilotSdk -Name "sdk-healthy" -ListModelsBody (
+                'return [{ id: "stub-model", name: "Stub Model", capabilities: { supports: {}, limits: { max_context_window_tokens: 1000 } } }];')
+            Mock Find-CocopilotSdkPath { $sdk }
+
+            $models = @(Invoke-CocopilotSdkModelQuery -CopilotCommand "copilot-test")
+
+            $models.Count | Should -Be 1
+            $models[0].Id | Should -Be "stub-model"
+        }
+
+        It "stops a query that does not finish, together with the processes it started" -Tag Slow {
+            if (-not $script:nodeForTests) { Set-ItResult -Skipped -Because "Node.js is not on PATH" }
+            # Both fixture processes carry this token in their command lines:
+            # the only proof that a recorded PID is still this test's process.
+            $fixtureToken = "cocopilot-fixture-" + [Guid]::NewGuid().ToString("N")
+            function Get-FixtureProcessState {
+                # "Ours" while the PID's command line carries the token, "Gone"
+                # when no process has the PID, "Other" for a readable command
+                # line without it (a reused PID), and "Unknown" when the
+                # command line cannot be read, which proves neither. A failed
+                # query throws instead of looking like a stopped process.
+                param([Parameter(Mandatory)][int]$ProcessId)
+                $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+                if ($null -eq $candidate) { return "Gone" }
+                if ($null -eq $candidate.CommandLine) { return "Unknown" }
+                if ($candidate.CommandLine.Contains($fixtureToken)) { return "Ours" }
+                return "Other"
+            }
+            $marker = Join-Path $TestDrive "stalled-query-pids.json"
+            $resultPath = Join-Path $TestDrive "stalled-query-result.txt"
+            $sdk = New-StubCopilotSdk -Name "sdk-stalled-$fixtureToken" -ListModelsBody (
+                "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', '$fixtureToken'], { stdio: 'ignore' }); " +
+                "writeFileSync($(ConvertTo-Json -InputObject $marker), JSON.stringify({ node: process.pid, nodeArgs: process.argv, child: child.pid })); " +
+                "setInterval(() => {}, 1000); return await new Promise(() => {});")
+
+            # Only the stalled query runs in a child pwsh, under a 15-second
+            # limit the parent enforces: a regression that never returns fails
+            # this test instead of hanging the suite. The child replaces the
+            # three lookups that would find a real Copilot CLI, and gets a
+            # private TEMP, so even a broken query leaves nothing outside
+            # this test.
+            $childTemp = Join-Path $TestDrive "stalled-query-temp"
+            New-Item -ItemType Directory -Force -Path $childTemp | Out-Null
+            $childScript = @(
+                ". $(ConvertTo-SingleQuoted (Join-Path $script:scriptsDir '_models.ps1'))"
+                'function Get-CocopilotCliVersion { "1.0.0" }'
+                'function Get-CocopilotExecutablePath { "C:\stub\copilot.exe" }'
+                "function Find-CocopilotSdkPath { $(ConvertTo-SingleQuoted $sdk) }"
+                'try { Invoke-CocopilotSdkModelQuery -CopilotCommand "copilot-test" -TimeoutSeconds 2 | Out-Null; $outcome = "returned without an error" }'
+                'catch { $outcome = $_.Exception.Message }'
+                "[System.IO.File]::WriteAllText($(ConvertTo-SingleQuoted $resultPath), `$outcome)"
+            ) -join "`n"
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME "pwsh.exe"))
+            foreach ($argument in "-NoProfile", "-NonInteractive", "-Command", $childScript) { $startInfo.ArgumentList.Add($argument) }
+            $startInfo.UseShellExecute = $false
+            $startInfo.Environment["TEMP"] = $childTemp
+            $startInfo.Environment["TMP"] = $childTemp
+            $child = [System.Diagnostics.Process]::Start($startInfo)
+            $finishedInTime = $false
+            $childStopped = $true
+            $stillRunning = @()
+            $unverified = @()
+            try {
+                $finishedInTime = $child.WaitForExit(15000)
+                if ($finishedInTime -and (Test-Path -LiteralPath $marker)) {
+                    $started = Get-Content -Raw -LiteralPath $marker | ConvertFrom-Json
+                    foreach ($processId in @($started.node, $started.child)) {
+                        # "Unknown" is polled like "Ours": neither proves that
+                        # the process stopped.
+                        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+                        $state = Get-FixtureProcessState -ProcessId $processId
+                        while (($state -in @("Ours", "Unknown")) -and [DateTime]::UtcNow -lt $deadline) {
+                            Start-Sleep -Milliseconds 100
+                            $state = Get-FixtureProcessState -ProcessId $processId
+                        }
+                        if ($state -eq "Ours") { $stillRunning += $processId }
+                        if ($state -eq "Unknown") { $unverified += $processId }
+                    }
+                }
+            } finally {
+                # Cleanup runs on every path, after the observations above, so
+                # it can never make a failing query look stopped. Each step
+                # runs even when the one before it throws.
+                try {
+                    if (-not $child.HasExited) {
+                        $child.Kill($true)
+                        $childStopped = $child.WaitForExit(5000)
+                    }
+                } finally {
+                    $child.Dispose()
+                    if (Test-Path -LiteralPath $marker) {
+                        $recorded = Get-Content -Raw -LiteralPath $marker | ConvertFrom-Json
+                        foreach ($processId in @($recorded.child, $recorded.node)) {
+                            # By recorded PID, never by name, and only while its
+                            # command line still carries this test's token.
+                            if ((Get-FixtureProcessState -ProcessId $processId) -eq "Ours") { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }
+                        }
+                    }
+                }
+            }
+
+            $childStopped | Should -BeTrue -Because "the test must stop its own child pwsh after the safety limit"
+            $finishedInTime | Should -BeTrue -Because "the query must give up at its own 2-second deadline, long before the 15-second safety limit"
+            Get-Content -Raw -LiteralPath $resultPath | Should -BeLike "*did not finish within 2 seconds*"
+            Test-Path -LiteralPath $marker | Should -BeTrue -Because "the fixture records the processes the query started"
+            # Node carries the token only through the stub SDK's path; without
+            # it, the ownership check would take Node for an unrelated process.
+            ((Get-Content -Raw -LiteralPath $marker | ConvertFrom-Json).nodeArgs -join " ") | Should -BeLike "*$fixtureToken*" -Because "the ownership check finds Node by the token on its command line"
+            $unverified | Should -BeNullOrEmpty -Because "a process whose command line cannot be read cannot be verified as stopped"
+            $stillRunning | Should -BeNullOrEmpty -Because "the query must stop the processes it started"
+        }
+    }
 }
 
 Describe "install.ps1 + profile snippet" {
     BeforeAll {
         $script:installScript = Join-Path $script:repoRoot "install.ps1"
         $script:snippetPath = Join-Path $script:repoRoot "profile\cocopilot.profile.ps1"
+
+        function New-StubCocopilotRoot {
+            # A fake install whose scripts only record that they ran, so a
+            # wrapper test can never start agents, query models, change a
+            # mailbox or rewrite a profile.
+            param([Parameter(Mandatory)][string]$Name)
+            $root = Join-Path $TestDrive $Name
+            New-Item -ItemType Directory -Force -Path (Join-Path $root "scripts") | Out-Null
+            foreach ($relative in "scripts\start-agents.ps1", "scripts\init-mailbox.ps1", "scripts\list-models.ps1",
+                "scripts\cleanup-mailbox.ps1", "install.ps1") {
+                $marker = Join-Path $root ("ran-" + (Split-Path -Leaf $relative) + ".txt")
+                [System.IO.File]::WriteAllText((Join-Path $root $relative),
+                    "[System.IO.File]::WriteAllText($(ConvertTo-SingleQuoted $marker), '')", $script:utf8NoBom)
+            }
+            return $root
+        }
     }
 
     It "profile snippet parses cleanly" {
@@ -2427,6 +2650,64 @@ Describe "install.ps1 + profile snippet" {
             cocopilot-prompt -Agent verifier -RepoPath $t
         } *>$null
         Should -Invoke Set-Clipboard -Times 1 -Exactly
+    }
+
+    It "refuses an unknown switch in every named cocopilot command before it runs anything" {
+        $stubRoot = New-StubCocopilotRoot "wrapper-stub-root"
+        $savedRoot = $script:CocopilotRoot
+        try {
+            & {
+                . $script:snippetPath
+                $script:CocopilotRoot = $stubRoot
+                foreach ($command in "cocopilot-start", "cocopilot-models", "cocopilot-cleanup", "cocopilot-update") {
+                    { & $command -NotACocopilotParameter } |
+                        Should -Throw -ExceptionType ([System.Management.Automation.ParameterBindingException]) -Because "$command must not ignore a mistyped switch"
+                }
+            }
+        } finally {
+            $script:CocopilotRoot = $savedRoot
+        }
+        @(Get-ChildItem -LiteralPath $stubRoot -Filter "ran-*.txt").Name | Should -BeNullOrEmpty
+    }
+
+    It "previews with cocopilot-cleanup -WhatIf and keeps the mailbox" {
+        $t = New-FakeTarget "cleanup-wrapper-whatif"
+        & $script:initScript -RepoPath $t *>$null
+        & {
+            . $script:snippetPath
+            cocopilot-cleanup -RepoPath $t -WhatIf
+        } *>$null
+        Test-Path -LiteralPath (Join-Path $t ".mailbox\session.log.md") | Should -BeTrue
+    }
+
+    It "keeps a caller's WhatIfPreference when cocopilot-cleanup gets no -WhatIf" {
+        $t = New-FakeTarget "cleanup-wrapper-whatif-preference"
+        & $script:initScript -RepoPath $t *>$null
+        & {
+            . $script:snippetPath
+            $WhatIfPreference = $true
+            cocopilot-cleanup -RepoPath $t
+        } *>$null
+        Test-Path -LiteralPath (Join-Path $t ".mailbox\session.log.md") | Should -BeTrue
+    }
+
+    It "passes cocopilot-cleanup -Confirm on, so a session that cannot ask removes nothing" -Tag Slow {
+        $t = New-FakeTarget "cleanup-wrapper-confirm"
+        & $script:initScript -RepoPath $t *>$null
+        $command = ". $(ConvertTo-SingleQuoted $script:snippetPath); cocopilot-cleanup -RepoPath $(ConvertTo-SingleQuoted $t) -Confirm"
+        & (Join-Path $PSHOME "pwsh.exe") -NoProfile -NonInteractive -Command $command *>$null
+        $LASTEXITCODE | Should -Not -Be 0 -Because "the confirmation prompt cannot run in a non-interactive session"
+        Test-Path -LiteralPath (Join-Path $t ".mailbox\session.log.md") | Should -BeTrue
+    }
+
+    It "passes cocopilot-cleanup -Confirm:`$false on over a caller's ConfirmPreference" -Tag Slow {
+        $t = New-FakeTarget "cleanup-wrapper-confirm-false"
+        & $script:initScript -RepoPath $t *>$null
+        $command = "`$ConfirmPreference = 'Low'; . $(ConvertTo-SingleQuoted $script:snippetPath); " +
+            "cocopilot-cleanup -RepoPath $(ConvertTo-SingleQuoted $t) -Confirm:`$false"
+        & (Join-Path $PSHOME "pwsh.exe") -NoProfile -NonInteractive -Command $command *>$null
+        $LASTEXITCODE | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $t ".mailbox") | Should -BeFalse
     }
 }
 
