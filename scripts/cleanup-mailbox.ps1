@@ -19,7 +19,8 @@
          ownership record, or session.log.md lacks cocopilot's marker).
       2. Deletes only the files cocopilot creates there (implementer.json,
          agent-a.md, agent-b.md, session.log.md, the two delivery cursors,
-         verify-request.md, implementer.lock, the baseline-<id>.json
+         verify-request.md, implementer.lock, the direct-transport
+         registration sessions.json and its sessions.lock, the baseline-<id>.json
          handoff baselines, and the writer's own ".<name>.<guid>.tmp"
          files). The directory is removed only when it is then empty;
          anything else in it is kept and reported.

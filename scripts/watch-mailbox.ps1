@@ -67,6 +67,18 @@
 .PARAMETER PollIntervalSeconds
     How often to re-check for changes, from 1 to 3600. Default 3.
 
+.PARAMETER NoWait
+    Never block: deliver the peer entries that are waiting, or print
+    NO_NEW_ENTRIES and the ownership record, then exit 0. Requires -Role.
+    Used by the direct transport, where a native peer message wakes the
+    agent instead of a background watch. With -Ack it first moves the
+    cursor, then delivers anything that arrived meanwhile, so an agent
+    drains by repeating the printed RE_ARM command until NO_NEW_ENTRIES.
+    The only wait is for an unmarked last entry, which may still be
+    growing: it waits once, at most until the log has been quiet for the
+    settle period, and reports INCOMPLETE_TAIL_PENDING if the entry is
+    still unsettled. It never enters the polling loop.
+
 .EXAMPLE
     .\scripts\watch-mailbox.ps1 -RepoPath C:\Repos\some-other-project -Role agent-a
     # delivers agent-b's unhandled entries, or waits for the next one
@@ -78,13 +90,18 @@
 .EXAMPLE
     .\scripts\watch-mailbox.ps1 -RepoPath C:\Repos\some-other-project -TimeoutSeconds 1800
     # observe the whole mailbox; give up after 30 minutes of silence (exit 1)
+
+.EXAMPLE
+    .\scripts\watch-mailbox.ps1 -RepoPath C:\Repos\some-other-project -Role agent-b -NoWait
+    # direct transport: deliver what is waiting now, or print NO_NEW_ENTRIES
 #>
 param(
     [string]$RepoPath = (Get-Location).Path,
     [ValidateSet("agent-a", "agent-b")][string]$Role,
     [ValidatePattern('^[0-9a-f]{32}:\d{1,18}$')][string]$Ack,
     [ValidateRange(0, [int]::MaxValue)][int]$TimeoutSeconds = 0,
-    [ValidateRange(1, 3600)][int]$PollIntervalSeconds = 3
+    [ValidateRange(1, 3600)][int]$PollIntervalSeconds = 3,
+    [switch]$NoWait
 )
 
 $ErrorActionPreference = "Stop"
@@ -101,6 +118,9 @@ $sessionLogPath = Join-Path $mailboxDir "session.log.md"
 
 if ($Ack -and -not $Role) {
     throw "-Ack needs -Role: an ACK token moves that role's cursor."
+}
+if ($NoWait -and -not $Role) {
+    throw "-NoWait needs -Role: it delivers that role's waiting entries."
 }
 
 foreach ($p in @($implementerPath, $laneA, $laneB, $sessionLogPath)) {
@@ -218,8 +238,9 @@ function Write-Delivery {
         foreach ($line in ($segment.Body -split "\r?\n")) { Write-Output "    $line" }
     }
     $token = "${Generation}:$($Scan.AckOffset)"
+    $noWaitSuffix = if ($NoWait) { " -NoWait" } else { "" }
     Write-Output "ACK_TOKEN: $token"
-    Write-Output "RE_ARM: & $(ConvertTo-SingleQuoted $PSCommandPath) -RepoPath $(ConvertTo-SingleQuoted $RepoPath) -Role $Role -Ack $token"
+    Write-Output "RE_ARM: & $(ConvertTo-SingleQuoted $PSCommandPath) -RepoPath $(ConvertTo-SingleQuoted $RepoPath) -Role $Role -Ack $token$noWaitSuffix"
     Write-Output ("OWNERSHIP_RECORD ({0}):" -f $(if ($RecordChanged) { "changed" } else { "unchanged" }))
     Write-Output $RecordText.TrimEnd()
 }
@@ -265,6 +286,35 @@ $recordHash = Get-TextHash -Text $recordText
 $scan = Get-DeliveryScan -Text $logText -From $from -TailSettled (Test-LogTailSettled)
 if (@($scan.Deliver).Count -gt 0) {
     Write-Delivery -Scan $scan -Generation $generation -Note $note -RecordChanged $false -RecordText $recordText
+    exit 0
+}
+
+if ($NoWait) {
+    if ($scan.HeldBack) {
+        # An unmarked last entry may still be growing, and in this mode no
+        # later watch wakes the agent for it: wait once, only until the log
+        # has been quiet for the settle period, then decide.
+        $quietFor = ([DateTime]::UtcNow - [System.IO.File]::GetLastWriteTimeUtc($sessionLogPath)).TotalSeconds
+        Start-Sleep -Milliseconds ([int][Math]::Ceiling(([Math]::Max(0, $settleSeconds - $quietFor) + 0.2) * 1000))
+        $logText = Read-CocopilotSharedText -Path $sessionLogPath
+        if ((Get-CocopilotLogGeneration -Text $logText) -cne $generation) {
+            throw "The session log was replaced while reading (its generation changed); run the read again without -Ack."
+        }
+        $recordText = Read-CocopilotSharedText -Path $implementerPath
+        $scan = Get-DeliveryScan -Text $logText -From $from -TailSettled (Test-LogTailSettled)
+        if (@($scan.Deliver).Count -gt 0) {
+            Write-Delivery -Scan $scan -Generation $generation -Note $note -RecordChanged $false -RecordText $recordText
+            exit 0
+        }
+    }
+    if ($scan.HeldBack) {
+        Write-Output "INCOMPLETE_TAIL_PENDING: the last log entry has no end marker and the log is still being written. Nothing wakes you for it later: run this read again in a few seconds."
+    } else {
+        Write-Output "NO_NEW_ENTRIES"
+        if ($note) { Write-Output "NOTE: $note" }
+    }
+    Write-Output "OWNERSHIP_RECORD (current):"
+    Write-Output $recordText.TrimEnd()
     exit 0
 }
 

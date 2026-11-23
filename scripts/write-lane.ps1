@@ -45,6 +45,14 @@
       3. Only then overwrite <Role>.md with the turn body, replaced whole
          (temp file + rename), so a reader never sees it missing or
          partly written.
+      4. With the direct transport (a valid .mailbox/sessions.json written
+         by start-agents.ps1 -Transport direct), print a NOTIFY_PEER line:
+         the exact send_session_message call that wakes the peer's
+         registered session. The script cannot send it itself, because
+         only the agent has that tool. When the registration does not fit
+         this target or Copilot configuration directory, it prints
+         NOTIFY_PEER_SKIPPED with the reason instead. With the mailbox
+         transport it prints nothing.
     A failure surfaces as a thrown error — never as silent success — and
     step 1 is never repeated once it has succeeded, so an entry is never
     duplicated. Every write is UTF-8 without a BOM via .NET, independent
@@ -140,3 +148,20 @@ if ($VerifyRequest) {
 
 # The log entry is written - nothing below may repeat it.
 Write-CocopilotFileAtomic -Path $lanePath -Text $Turn
+
+# Direct transport: the entry is committed, so the peer can now be woken.
+# Only the agent can send (send_session_message is a session tool), so this
+# prints the exact call. Nothing here may throw: the entry already exists.
+try {
+    $notification = Get-CocopilotPeerNotification -MailboxDir $mailboxDir -RepoPath $RepoPath -Role $Role -ConfigDir (Get-CocopilotConfigDir)
+} catch {
+    $notification = [pscustomobject]@{ State = "Warning"; Message = "No direct wake hint can be sent: reading sessions.json failed ($($_.Exception.Message)). The entry is committed; the peer reads it on its next drain." }
+}
+switch ($notification.State) {
+    "Ready" {
+        Write-Output ("NOTIFY_PEER: call the send_session_message tool once now, with session_id `"$($notification.PeerSessionId)`" " +
+            "and message `"$($notification.Message)`". If the send fails, do not assume it was delivered and do not retry it in a loop: " +
+            "record the error in your next normal lane entry. The peer's next drain reads this entry either way.")
+    }
+    "Warning" { Write-Output "NOTIFY_PEER_SKIPPED: $($notification.Message)" }
+}

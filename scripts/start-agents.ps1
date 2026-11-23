@@ -155,6 +155,25 @@
     and PowerShell ISE (powershell_ise.exe) are rejected up front, and each
     new window re-checks its own version before it starts copilot.
 
+.PARAMETER Transport
+    How an agent is woken when its peer posts an entry. "mailbox" (the
+    default) keeps today's behaviour: each agent runs watch-mailbox.ps1 in
+    the background, which polls the mailbox. "direct" wakes the peer with
+    Copilot's native send_session_message tool instead, so no agent polls.
+    Both use the same .mailbox/ as the only source of truth.
+
+    Direct needs the user-level setting sessionManagementTools.enabled on
+    (and .message not off, .scope not in-process); the launcher checks it
+    with the stock CLI before anything else and stops with the fix command
+    otherwise. It gives each agent a fresh session id with --session-id and
+    registers both in .mailbox/sessions.json before either window opens, so
+    -AgentAArgs/-AgentBArgs may not select a session themselves
+    (--session-id, --resume, -r, --continue, --connect). It also adds
+    --max-autopilot-continues 0 (unless the arguments already set it): a
+    waiting agent ends its turn with no background work, and autopilot
+    would otherwise nudge it. A mailbox launch removes a registration left
+    by an earlier direct launch.
+
 .EXAMPLE
     .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project
     # shows the available model catalog, then asks which model/settings to
@@ -173,6 +192,10 @@
     .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentACommand copilot-opus -AgentAArgs @() -AgentBCommand copilot-sol -AgentBArgs @() -UseWindowsTerminal:$false
     # use profile shortcuts that supply their own flags, and force plain
     # console windows instead of Windows Terminal tabs
+
+.EXAMPLE
+    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -Transport direct
+    # agents wake each other with native peer messages instead of polling
 #>
 param(
     [string]$RepoPath = (Get-Location).Path,
@@ -191,7 +214,8 @@ param(
     [string]$NameB = "cocopilot-agent-b",
     [Alias("Name")][string]$SessionName,
     [switch]$UseWindowsTerminal = $true,
-    [string]$ShellExe = (Get-Process -Id $PID).Path
+    [string]$ShellExe = (Get-Process -Id $PID).Path,
+    [ValidateSet("mailbox", "direct")][string]$Transport = "mailbox"
 )
 
 $ErrorActionPreference = "Stop"
@@ -211,6 +235,16 @@ if ($agentAArgsBound -and @($agentATypedSettings).Count -gt 0) {
 }
 if ($agentBArgsBound -and @($agentBTypedSettings).Count -gt 0) {
     throw "-AgentBArgs cannot be combined with -AgentBModel, -AgentBEffort, or -AgentBContext."
+}
+if ($Transport -eq "direct") {
+    # The launcher assigns each session id itself and registers it; a raw
+    # argument that picks another session would silently break the pair.
+    foreach ($rawArgs in @(@{ Label = "-AgentAArgs"; Value = $AgentAArgs }, @{ Label = "-AgentBArgs"; Value = $AgentBArgs })) {
+        $conflict = Get-CocopilotSessionSelectionArgument -Arguments @($rawArgs.Value | Where-Object { $null -ne $_ })
+        if ($conflict) {
+            throw "$($rawArgs.Label) contains '$conflict', but -Transport direct assigns each agent's session id itself. Remove it, or use -Transport mailbox."
+        }
+    }
 }
 
 $NameA = Resolve-CocopilotAgentName -CurrentValue $NameA -ExplicitlyBound $PSBoundParameters.ContainsKey('NameA') -SessionName $SessionName -AgentRole "agent-a"
@@ -268,11 +302,21 @@ $needsCatalog = $needsAgentASelection -or $needsAgentBSelection
 $agentACommandBound = $PSBoundParameters.ContainsKey("AgentACommand")
 $agentBCommandBound = $PSBoundParameters.ContainsKey("AgentBCommand")
 $stockCopilot = $null
-if ($needsCatalog -or -not $agentACommandBound -or -not $agentBCommandBound) {
+if ($needsCatalog -or -not $agentACommandBound -or -not $agentBCommandBound -or $Transport -eq "direct") {
     $stockCopilot = Resolve-CocopilotCommand
 }
 if (-not $agentACommandBound) { $AgentACommand = $stockCopilot }
 if (-not $agentBCommandBound) { $AgentBCommand = $stockCopilot }
+
+# Direct transport fails here, before the model picker or any window, when
+# the CLI settings cannot let two separate sessions message each other.
+if ($Transport -eq "direct") {
+    Assert-CocopilotDirectTransportReady -CopilotCommand $stockCopilot
+    if ($agentACommandBound -or $agentBCommandBound) {
+        Write-Warning ("The direct-transport settings were checked with '$stockCopilot'. A custom -AgentACommand/-AgentBCommand " +
+            "must use the same Copilot configuration directory ($(Get-CocopilotConfigDir)), or the agents cannot reach each other.")
+    }
+}
 
 if ($needsCatalog) {
     $catalog = @(Get-CocopilotModelCatalog -CopilotCommand $stockCopilot)
@@ -331,6 +375,23 @@ if (-not $agentBArgsBound) {
         -Context $agentBConfiguration.Context)
 }
 
+if ($Transport -eq "direct") {
+    # A direct-transport agent waits for its peer by ending its turn with no
+    # background work. Autopilot would answer that with automatic
+    # continuation nudges, so direct launches allow none: the agent simply
+    # waits until a peer message wakes it. Harmless outside autopilot.
+    $noContinuations = @("--max-autopilot-continues", "0")
+    foreach ($role in @("A", "B")) {
+        $roleArgs = if ($role -eq "A") { @($AgentAArgs) } else { @($AgentBArgs) }
+        if (@($roleArgs | Where-Object { $_ -match '^--max-autopilot-continues(=|$)' }).Count -gt 0) {
+            Write-Warning ("-Agent${role}Args sets --max-autopilot-continues itself. With -Transport direct, a value above 0 lets " +
+                "autopilot nudge an agent that is only waiting for its peer.")
+            continue
+        }
+        if ($role -eq "A") { $AgentAArgs = @($roleArgs) + $noContinuations } else { $AgentBArgs = @($roleArgs) + $noContinuations }
+    }
+}
+
 function Start-CopilotAgent {
     param(
         [string]$RepoPath,
@@ -341,7 +402,9 @@ function Start-CopilotAgent {
         [string]$Name,
         [ValidateSet("agent-a", "agent-b")][string]$AgentRole,
         [string]$ShellExe,
-        [switch]$UseWindowsTerminal
+        [switch]$UseWindowsTerminal,
+        [ValidateSet("mailbox", "direct")][string]$Transport = "mailbox",
+        [string]$SessionId
     )
 
     $agentCommandQ = ConvertTo-SingleQuoted $AgentCommand
@@ -356,9 +419,11 @@ function Start-CopilotAgent {
     # The new window renders its own prompt, so the encoded command carries
     # only paths and arguments. An embedded prompt, encoded as UTF-16 Base64,
     # would push long-path launches past the Windows command-line limit of
-    # 32,767 characters. A failed render throws before copilot starts.
+    # 32,767 characters. A failed render throws before copilot starts. Its
+    # warning stream is dropped: the direct-transport restart warning is
+    # meant for a manual render, and this window has the registered id.
     $renderContextArg = if ($ContextRoot) { " -ContextRoot $contextRootQ" } else { "" }
-    $renderPrompt = "`$prompt = (& $renderScriptQ -Agent $renderAgent -RepoPath $repoQ$renderContextArg) -join [Environment]::NewLine; " +
+    $renderPrompt = "`$prompt = (& $renderScriptQ -Agent $renderAgent -RepoPath $repoQ$renderContextArg -Transport $Transport 3>`$null) -join [Environment]::NewLine; " +
         "if ([string]::IsNullOrWhiteSpace(`$prompt)) { throw 'cocopilot rendered an empty agent prompt.' }; "
 
     # --add-dir grants read/run access to cocopilot's own install (for
@@ -367,7 +432,10 @@ function Start-CopilotAgent {
     # --add-dir opens the optional workspace context root; the read-only
     # discipline for it is the protocol's, not the CLI's.
     $contextDirArg = if ($ContextRoot) { "--add-dir $contextRootQ " } else { "" }
-    $copilotInvocation = ("& $agentCommandQ " + $(if ($agentArgsQ) { "$agentArgsQ " } else { "" }) + "-C $repoQ -n $nameQ --add-dir $addDirQ $contextDirArg-i `$prompt").Trim()
+    # Direct transport: the id registered in .mailbox/sessions.json, so the
+    # peer's send_session_message reaches exactly this session.
+    $sessionIdArg = if ($SessionId) { "--session-id $(ConvertTo-SingleQuoted $SessionId) " } else { "" }
+    $copilotInvocation = ("& $agentCommandQ " + $(if ($agentArgsQ) { "$agentArgsQ " } else { "" }) + "-C $repoQ -n $nameQ $sessionIdArg--add-dir $addDirQ $contextDirArg-i `$prompt").Trim()
 
     # Runs first in the new window: an explicit -ShellExe that points at an
     # older pwsh must fail before anything else happens.
@@ -427,8 +495,26 @@ Write-Host ("Agent B -> '{0}' | command: {1} | model: {2} | effort: {3} | contex
     $(if ($agentBEffortDisplay) { $agentBEffortDisplay } else { "model default" }),
     $(if ($agentBContextDisplay) { $agentBContextDisplay } else { "model default" })) -ForegroundColor Cyan
 
-Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentACommand -AgentArgs $AgentAArgs -Name $NameA -AgentRole "agent-a" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal
-Start-Sleep -Seconds 1
-Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentBCommand -AgentArgs $AgentBArgs -Name $NameB -AgentRole "agent-b" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal
+$sessionIdA = $null
+$sessionIdB = $null
+$mailboxDir = Join-Path $RepoPath ".mailbox"
+if ($Transport -eq "direct") {
+    # Both registrations land in one locked write before either window
+    # opens, so neither agent can render a banner or post an entry against
+    # a half-registered pair.
+    $sessionIdA = [Guid]::NewGuid().ToString()
+    $sessionIdB = [Guid]::NewGuid().ToString()
+    Set-CocopilotSessionRegistration -MailboxDir $mailboxDir -RepoPath $RepoPath -ConfigDir (Get-CocopilotConfigDir) -Agents @{
+        "agent-a" = @{ SessionId = $sessionIdA; Name = $NameA }
+        "agent-b" = @{ SessionId = $sessionIdB; Name = $NameB }
+    }
+    Write-Host "Direct transport: agent-a session $sessionIdA, agent-b session $sessionIdB (registered in $mailboxDir\sessions.json)." -ForegroundColor Cyan
+} elseif (Remove-CocopilotSessionRegistration -MailboxDir $mailboxDir) {
+    Write-Host "Mailbox transport: removed the direct-transport registration left by an earlier launch." -ForegroundColor Cyan
+}
 
-Write-Host "Launched $NameA via '$AgentACommand' and $NameB via '$AgentBCommand' (shell: $ShellExe), paired on $RepoPath." -ForegroundColor Green
+Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentACommand -AgentArgs $AgentAArgs -Name $NameA -AgentRole "agent-a" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal -Transport $Transport -SessionId $sessionIdA
+Start-Sleep -Seconds 1
+Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentBCommand -AgentArgs $AgentBArgs -Name $NameB -AgentRole "agent-b" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal -Transport $Transport -SessionId $sessionIdB
+
+Write-Host "Launched $NameA via '$AgentACommand' and $NameB via '$AgentBCommand' (shell: $ShellExe, transport: $Transport), paired on $RepoPath." -ForegroundColor Green

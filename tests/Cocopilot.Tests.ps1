@@ -3352,7 +3352,8 @@ Describe "Mailbox I/O and log framing helpers" {
             $hex = "0123456789abcdef0123456789abcdef"
             foreach ($name in @(
                     "implementer.json", "agent-a.md", "agent-b.md", "session.log.md", "agent-a.cursor", "agent-b.cursor",
-                    "verify-request.md", "implementer.lock", "baseline-$hex.json", ".implementer.json.$hex.tmp",
+                    "verify-request.md", "implementer.lock", "sessions.json", "sessions.lock", "baseline-$hex.json",
+                    ".implementer.json.$hex.tmp", ".sessions.json.$hex.tmp",
                     ".agent-b.cursor.$hex.tmp", ".baseline-$hex.json.$hex.tmp")) {
                 Test-CocopilotMailboxEntryName -Name $name | Should -BeTrue -Because "$name is cocopilot's"
             }
@@ -3391,5 +3392,473 @@ Describe "Mailbox I/O and log framing helpers" {
         It "refuses a log without any entry heading" {
             { Get-CocopilotLogGeneration -Text $script:logHeader } | Should -Throw "*generation*"
         }
+    }
+}
+
+Describe "_transport.ps1 direct-transport helpers" {
+    BeforeAll {
+        # A native fake CLI, so standard error really travels on its own
+        # stream, as it does for copilot.exe. FAKE_COPILOT_MODE picks the
+        # settings it reports.
+        $script:fakeCliDir = Join-Path $TestDrive "fake-cli"
+        New-Item -ItemType Directory -Force -Path $script:fakeCliDir | Out-Null
+        $script:fakeCli = Join-Path $script:fakeCliDir "copilot.cmd"
+        @(
+            '@echo off',
+            'if "%FAKE_COPILOT_MODE%"=="error" ( echo Error: Unknown settings key 1>&2 & exit /b 1 )',
+            'if "%2"=="sessionManagementTools.enabled" if not "%FAKE_COPILOT_MODE%"=="off" ( echo true& exit /b 0 )',
+            'if "%2"=="sessionManagementTools.message" if "%FAKE_COPILOT_MODE%"=="message-off" ( echo false& exit /b 0 )',
+            'if "%2"=="sessionManagementTools.scope" if "%FAKE_COPILOT_MODE%"=="in-process" ( echo in-process& exit /b 0 )',
+            'if "%2"=="sessionManagementTools.scope" if "%FAKE_COPILOT_MODE%"=="scope-all" ( echo all& exit /b 0 )',
+            'exit /b 1'
+        ) | Set-Content -LiteralPath $script:fakeCli -Encoding ascii
+    }
+
+    AfterEach { Remove-Item Env:\FAKE_COPILOT_MODE -ErrorAction SilentlyContinue }
+
+    Context "Assert-CocopilotDirectTransportReady" {
+        It "accepts enabled tools with unset message and scope (documented defaults) or scope all" -ForEach @(
+            @{ Mode = "defaults" }, @{ Mode = "scope-all" }
+        ) {
+            $env:FAKE_COPILOT_MODE = $Mode
+            { Assert-CocopilotDirectTransportReady -CopilotCommand $script:fakeCli } | Should -Not -Throw
+        }
+
+        It "refuses <Mode> with the fix command" -ForEach @(
+            @{ Mode = "off"; Expected = "*copilot config sessionManagementTools.enabled on*" },
+            @{ Mode = "message-off"; Expected = "*sessionManagementTools.message is 'false'*" },
+            @{ Mode = "in-process"; Expected = "*sessionManagementTools.scope is 'in-process'*" }
+        ) {
+            $env:FAKE_COPILOT_MODE = $Mode
+            { Assert-CocopilotDirectTransportReady -CopilotCommand $script:fakeCli } | Should -Throw $Expected
+        }
+
+        It "reports a CLI error as a read failure, never as an unset key" {
+            $env:FAKE_COPILOT_MODE = "error"
+            { Get-CocopilotCliSetting -CopilotCommand $script:fakeCli -Key "sessionManagementTools.scope" } |
+                Should -Throw "*Could not read the Copilot CLI setting*Unknown settings key*"
+        }
+    }
+
+    Context "session registration" {
+        BeforeEach {
+            $script:target = New-FakeTarget ("reg-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
+            $script:mailbox = Join-Path $script:target ".mailbox"
+            New-Item -ItemType Directory -Force -Path $script:mailbox | Out-Null
+            $script:configDir = "C:\cfg-home"
+            $script:idA = [Guid]::NewGuid().ToString()
+            $script:idB = [Guid]::NewGuid().ToString()
+            Set-CocopilotSessionRegistration -MailboxDir $script:mailbox -RepoPath $script:target -ConfigDir $script:configDir -Agents @{
+                "agent-a" = @{ SessionId = $script:idA; Name = "pair - agent a" }
+                "agent-b" = @{ SessionId = $script:idB; Name = "pair - agent b" }
+            }
+        }
+
+        It "re-registers one role and keeps the other" {
+            $newA = [Guid]::NewGuid().ToString()
+            Set-CocopilotSessionRegistration -MailboxDir $script:mailbox -RepoPath $script:target -ConfigDir $script:configDir -Agents @{
+                "agent-a" = @{ SessionId = $newA; Name = "pair - agent a" }
+            }
+            $record = (Read-CocopilotSessionRegistration -MailboxDir $script:mailbox).Record
+            $record.agents.'agent-a'.sessionId | Should -Be $newA
+            $record.agents.'agent-b'.sessionId | Should -Be $script:idB
+            Test-Path -LiteralPath (Join-Path $script:mailbox "sessions.lock") | Should -BeFalse
+        }
+
+        It "drops the other role when the target or configuration directory changes" {
+            Set-CocopilotSessionRegistration -MailboxDir $script:mailbox -RepoPath $script:target -ConfigDir "C:\other-home" -Agents @{
+                "agent-a" = @{ SessionId = $script:idA; Name = "a" }
+            }
+            (Read-CocopilotSessionRegistration -MailboxDir $script:mailbox).Record.agents.'agent-b' | Should -BeNullOrEmpty
+        }
+
+        It "refuses a session id that is not a GUID, leaving the registration unchanged" {
+            $before = Get-Content -Raw (Join-Path $script:mailbox "sessions.json")
+            { Set-CocopilotSessionRegistration -MailboxDir $script:mailbox -RepoPath $script:target -ConfigDir $script:configDir -Agents @{
+                    "agent-a" = @{ SessionId = "cocopilot-agent-a"; Name = "a" } } } | Should -Throw "*not a GUID*"
+            Get-Content -Raw (Join-Path $script:mailbox "sessions.json") | Should -Be $before
+        }
+
+        It "waits for a held registration lock instead of overwriting a concurrent update" -Tag Slow {
+            $lockPath = Join-Path $script:mailbox "sessions.lock"
+            [System.IO.File]::WriteAllText($lockPath, "")
+            $holder = Start-FileHolder -Path $lockPath -Milliseconds 1000
+            try {
+                $newB = [Guid]::NewGuid().ToString()
+                $timer = [System.Diagnostics.Stopwatch]::StartNew()
+                Set-CocopilotSessionRegistration -MailboxDir $script:mailbox -RepoPath $script:target -ConfigDir $script:configDir -Agents @{
+                    "agent-b" = @{ SessionId = $newB; Name = "b" } }
+                $timer.Elapsed.TotalMilliseconds | Should -BeGreaterThan 200 -Because "the update had to wait for the holder"
+                $record = (Read-CocopilotSessionRegistration -MailboxDir $script:mailbox).Record
+                $record.agents.'agent-b'.sessionId | Should -Be $newB
+                $record.agents.'agent-a'.sessionId | Should -Be $script:idA
+            } finally {
+                $holder | Receive-Job -Wait -AutoRemoveJob | Out-Null
+            }
+            Test-Path -LiteralPath $lockPath | Should -BeFalse
+        }
+
+        It "names the peer's registered session for a valid registration" {
+            $notification = Get-CocopilotPeerNotification -MailboxDir $script:mailbox -RepoPath $script:target -Role agent-a -ConfigDir $script:configDir
+            $notification.State | Should -Be "Ready"
+            $notification.PeerSessionId | Should -Be $script:idB
+            $notification.Message | Should -Be (Get-CocopilotPeerHintText -Role agent-a)
+        }
+
+        It "warns instead of notifying when <Case>" -ForEach @(
+            @{ Case = "the configuration directory differs"; ConfigDir = "C:\other-home"; Target = $null; Expected = "*configuration directory*" },
+            @{ Case = "the target differs"; ConfigDir = "C:\cfg-home"; Target = "C:\some\other\repo"; Expected = "*belongs to target*" }
+        ) {
+            $repo = if ($Target) { $Target } else { $script:target }
+            $notification = Get-CocopilotPeerNotification -MailboxDir $script:mailbox -RepoPath $repo -Role agent-b -ConfigDir $ConfigDir
+            $notification.State | Should -Be "Warning"
+            $notification.Message | Should -BeLike $Expected
+            $notification.PeerSessionId | Should -BeNullOrEmpty
+        }
+
+        It "warns on a damaged registration and stays silent without one" {
+            [System.IO.File]::WriteAllText((Join-Path $script:mailbox "sessions.json"), "{ not json")
+            (Get-CocopilotPeerNotification -MailboxDir $script:mailbox -RepoPath $script:target -Role agent-a -ConfigDir $script:configDir).State |
+                Should -Be "Warning"
+            Remove-CocopilotSessionRegistration -MailboxDir $script:mailbox | Should -BeTrue
+            (Get-CocopilotPeerNotification -MailboxDir $script:mailbox -RepoPath $script:target -Role agent-a -ConfigDir $script:configDir).State |
+                Should -Be "None"
+            Remove-CocopilotSessionRegistration -MailboxDir $script:mailbox | Should -BeFalse
+        }
+    }
+
+    Context "Get-CocopilotSessionSelectionArgument" {
+        It "finds <Argument>" -ForEach @(
+            @{ Argument = "--session-id" }, @{ Argument = "--session-id=0cb916db-26aa-40f2-86b5-1ba81b225fd2" },
+            @{ Argument = "--resume" }, @{ Argument = "--resume=abc" }, @{ Argument = "-r" },
+            @{ Argument = "--continue" }, @{ Argument = "--connect=abc" }
+        ) {
+            Get-CocopilotSessionSelectionArgument -Arguments @("--model", "x", $Argument) | Should -Be $Argument
+        }
+
+        It "ignores ordinary arguments" {
+            Get-CocopilotSessionSelectionArgument -Arguments @("--model", "claude-opus-5.5", "--effort", "medium") | Should -BeNullOrEmpty
+            Get-CocopilotSessionSelectionArgument -Arguments @() | Should -BeNullOrEmpty
+        }
+    }
+}
+Describe "watch-mailbox.ps1 -NoWait (direct transport drain)" {
+    BeforeAll {
+        function Invoke-Read {
+            # Runs a -NoWait read in this process and times it.
+            param([Parameter(Mandatory)][string]$RepoPath, [string]$Role = "agent-a", [string]$Ack)
+            $arguments = @{ RepoPath = $RepoPath; Role = $Role; NoWait = $true }
+            if ($Ack) { $arguments.Ack = $Ack }
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
+            $output = & $script:watchScript @arguments *>&1 | Out-String
+            return [pscustomobject]@{ Output = $output; ExitCode = $LASTEXITCODE; Seconds = $timer.Elapsed.TotalSeconds }
+        }
+
+        function Get-ReadAckToken {
+            param([Parameter(Mandatory)][string]$Output)
+            $match = [regex]::Match($Output, '(?m)^ACK_TOKEN: (?<token>[0-9a-f]{32}:\d+)\r?$')
+            $match.Success | Should -BeTrue -Because "every delivery ends with an ACK token"
+            return $match.Groups["token"].Value
+        }
+    }
+
+    It "refuses -NoWait without -Role" -Tag Slow {
+        $t = New-FakeTarget "nowait-norole"
+        & $script:initScript -RepoPath $t *>$null
+        { & $script:watchScript -RepoPath $t -NoWait } | Should -Throw "*-NoWait needs -Role*"
+    }
+
+    It "returns at once with NO_NEW_ENTRIES and the current record when nothing waits" -Tag Slow {
+        $t = New-FakeTarget "nowait-empty"
+        & $script:initScript -RepoPath $t *>$null
+        $result = Invoke-Read -RepoPath $t
+        $result.ExitCode | Should -Be 0
+        $result.Output | Should -Match "(?m)^NO_NEW_ENTRIES\r?$"
+        $result.Output | Should -Match "OWNERSHIP_RECORD \(current\):"
+        $result.Output | Should -Match '"owner":"agent-a"'
+        $result.Seconds | Should -BeLessThan 3 -Because "-NoWait never polls"
+    }
+
+    It "delivers waiting entries with a RE_ARM that keeps -NoWait, and redelivers them until acknowledged" -Tag Slow {
+        $t = New-FakeTarget "nowait-deliver"
+        & $script:initScript -RepoPath $t *>$null
+        & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "QUESTION #1`nwhich one?"
+        $first = Invoke-Read -RepoPath $t
+        $first.Output | Should -Match "MAILBOX_CHANGED: 1 new entry"
+        $first.Output | Should -Match "(?m)^    which one\?\r?$"
+        $first.Output | Should -Match "(?m)^RE_ARM: & '.+watch-mailbox\.ps1' -RepoPath '.+' -Role agent-a -Ack [0-9a-f]{32}:\d+ -NoWait\r?$"
+        # A duplicate hint only repeats the drain: the same entries, the same token.
+        $second = Invoke-Read -RepoPath $t
+        (Get-ReadAckToken -Output $second.Output) | Should -Be (Get-ReadAckToken -Output $first.Output)
+    }
+
+    It "after -Ack delivers what arrived during handling, then reports NO_NEW_ENTRIES" -Tag Slow {
+        $t = New-FakeTarget "nowait-drain"
+        & $script:initScript -RepoPath $t *>$null
+        & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "SYNC #1`nfirst"
+        $token = Get-ReadAckToken -Output (Invoke-Read -RepoPath $t).Output
+        & $script:writeLaneScript -RepoPath $t -Role "agent-b" -Turn "SYNC #2`narrived while handling"
+        $drain = Invoke-Read -RepoPath $t -Ack $token
+        $drain.Output | Should -Match "MAILBOX_CHANGED: 1 new entry"
+        $drain.Output | Should -Match "(?m)^    arrived while handling\r?$"
+        $drain.Output | Should -Not -Match "(?m)^    first\r?$"
+        $last = Invoke-Read -RepoPath $t -Ack (Get-ReadAckToken -Output $drain.Output)
+        $last.Output | Should -Match "(?m)^NO_NEW_ENTRIES\r?$"
+        (Get-Content -Raw (Join-Path $t ".mailbox\agent-a.cursor")) | Should -BeExactly ((Get-ReadAckToken -Output $drain.Output).Replace(":", " ") + "`n")
+    }
+
+    It "waits once for an unmarked tail to settle, then delivers it labelled INCOMPLETE" -Tag Slow {
+        $t = New-FakeTarget "nowait-tail-settles"
+        & $script:initScript -RepoPath $t *>$null
+        [System.IO.File]::AppendAllText((Join-Path $t ".mailbox\session.log.md"), "`n## 2026-01-01 00:00:00Z agent-b`ntorn text", $script:utf8NoBom)
+        $result = Invoke-Read -RepoPath $t
+        $result.Output | Should -Match "\[INCOMPLETE - no end marker"
+        $result.Output | Should -Match "(?m)^    torn text\r?$"
+        $result.Seconds | Should -BeLessThan 15 -Because "the settle wait is bounded"
+    }
+
+    It "reports INCOMPLETE_TAIL_PENDING when the unmarked tail keeps changing" -Tag Slow {
+        $t = New-FakeTarget "nowait-tail-busy"
+        & $script:initScript -RepoPath $t *>$null
+        $logPath = Join-Path $t ".mailbox\session.log.md"
+        [System.IO.File]::AppendAllText($logPath, "`n## 2026-01-01 00:00:00Z agent-b`nstill being written", $script:utf8NoBom)
+        $writer = Start-Job -ScriptBlock {
+            param($path)
+            $until = [DateTime]::UtcNow.AddSeconds(20)
+            while ([DateTime]::UtcNow -lt $until) { [System.IO.File]::SetLastWriteTimeUtc($path, [DateTime]::UtcNow); Start-Sleep -Milliseconds 300 }
+        } -ArgumentList $logPath
+        try {
+            $result = Invoke-Read -RepoPath $t
+        } finally {
+            Stop-Job $writer; Remove-Job $writer -Force
+        }
+        $result.ExitCode | Should -Be 0
+        $result.Output | Should -Match "(?m)^INCOMPLETE_TAIL_PENDING: "
+        $result.Output | Should -Not -Match "NO_NEW_ENTRIES"
+        $result.Output | Should -Not -Match "(?m)^    still being written\r?$"
+        $result.Seconds | Should -BeLessThan 15 -Because "the settle wait is bounded"
+    }
+}
+Describe "write-lane.ps1 direct-transport notification" {
+    BeforeEach {
+        $script:t = New-FakeTarget ("notify-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
+        & $script:initScript -RepoPath $script:t *>$null
+        $script:mailbox = Join-Path $script:t ".mailbox"
+        $script:peerId = [Guid]::NewGuid().ToString()
+        $script:savedCopilotHome = $env:COPILOT_HOME
+    }
+
+    AfterEach {
+        if ($null -eq $script:savedCopilotHome) { Remove-Item Env:\COPILOT_HOME -ErrorAction SilentlyContinue } else { $env:COPILOT_HOME = $script:savedCopilotHome }
+    }
+
+    It "prints nothing with the mailbox transport" {
+        $output = & $script:writeLaneScript -RepoPath $script:t -Role agent-a -Turn "SYNC #1`nplain" *>&1 | Out-String
+        $output.Trim() | Should -BeNullOrEmpty
+    }
+
+    It "prints the exact send call for the peer's registered session after the entry is committed" {
+        Set-CocopilotSessionRegistration -MailboxDir $script:mailbox -RepoPath $script:t -ConfigDir (Get-CocopilotConfigDir) -Agents @{
+            "agent-a" = @{ SessionId = [Guid]::NewGuid().ToString(); Name = "a" }
+            "agent-b" = @{ SessionId = $script:peerId; Name = "b" }
+        }
+        $output = & $script:writeLaneScript -RepoPath $script:t -Role agent-a -Turn "SYNC #1`ndirect" *>&1 | Out-String
+        $output | Should -Match ("(?m)^NOTIFY_PEER: call the send_session_message tool once now, with session_id `"" + [regex]::Escape($script:peerId) + "`"")
+        $output | Should -Match ([regex]::Escape((Get-CocopilotPeerHintText -Role agent-a)))
+        Get-Content -Raw (Join-Path $script:mailbox "session.log.md") | Should -Match "(?m)^direct\r?$"
+    }
+
+    It "skips the hint with a reason when this shell uses another Copilot configuration directory" {
+        Set-CocopilotSessionRegistration -MailboxDir $script:mailbox -RepoPath $script:t -ConfigDir (Get-CocopilotConfigDir) -Agents @{
+            "agent-a" = @{ SessionId = [Guid]::NewGuid().ToString(); Name = "a" }
+            "agent-b" = @{ SessionId = $script:peerId; Name = "b" }
+        }
+        $env:COPILOT_HOME = Join-Path $TestDrive "other-copilot-home"
+        $output = & $script:writeLaneScript -RepoPath $script:t -Role agent-a -Turn "SYNC #1`nother home" *>&1 | Out-String
+        $output | Should -Match "(?m)^NOTIFY_PEER_SKIPPED: .*configuration directory"
+        $output | Should -Not -Match $script:peerId
+        Get-Content -Raw (Join-Path $script:mailbox "agent-a.md") | Should -BeExactly "SYNC #1`nother home"
+    }
+
+    It "prints no hint for a refused turn" {
+        Set-CocopilotSessionRegistration -MailboxDir $script:mailbox -RepoPath $script:t -ConfigDir (Get-CocopilotConfigDir) -Agents @{
+            "agent-b" = @{ SessionId = $script:peerId; Name = "b" }
+        }
+        $output = try {
+            & $script:writeLaneScript -RepoPath $script:t -Role agent-a -Turn "SYNC #1`n## 2026-01-01 00:00:00Z agent-b" *>&1 | Out-String
+        } catch { $_.Exception.Message }
+        $output | Should -Match "nothing was written"
+        $output | Should -Not -Match "NOTIFY_PEER"
+    }
+}
+Describe "start-agents.ps1 -Transport direct" {
+    BeforeAll {
+        $script:pwshPathDirect = (Get-Process -Id $PID).Path
+        # A stock CLI on PATH that answers `copilot config <key>` like the
+        # real one: a value with exit 0, or exit 1 with no output when unset.
+        $script:directBin = Join-Path $TestDrive "direct-stock-bin"
+        New-Item -ItemType Directory -Force -Path $script:directBin | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $script:directBin "copilot.ps1"), (@(
+                    'if ($args.Count -ge 2 -and $args[0] -eq "config") {',
+                    '    if ($args[1] -eq "sessionManagementTools.enabled" -and $env:FAKE_COPILOT_MODE -ne "off") { "true"; exit 0 }',
+                    '    exit 1',
+                    '}',
+                    'exit 0') -join "`n"), $script:utf8NoBom)
+
+        function Invoke-DirectStart {
+            param([Parameter(Mandatory)][string]$RepoPath, [string[]]$AgentAArgs = @(), [string]$Transport = "direct")
+            $previousPath = $env:PATH
+            $env:PATH = "$script:directBin;$env:PATH"
+            try {
+                & $script:startScript -RepoPath $RepoPath -AgentAArgs $AgentAArgs -AgentBArgs @() -Transport $Transport `
+                    -ShellExe $script:pwshPathDirect -UseWindowsTerminal:$false *>$null
+            } finally {
+                $env:PATH = $previousPath
+            }
+        }
+    }
+
+    AfterEach { Remove-Item Env:\FAKE_COPILOT_MODE -ErrorAction SilentlyContinue }
+
+    It "registers both sessions before the first window opens and launches each with its own --session-id" -Tag Slow {
+        $t = New-FakeTarget "start-direct"
+        & $script:initScript -RepoPath $t *>$null
+        $registrationPath = Join-Path $t ".mailbox\sessions.json"
+        $launches = [System.Collections.Generic.List[object]]::new()
+        $registeredAtLaunch = [System.Collections.Generic.List[bool]]::new()
+        Mock Start-Process { $launches.Add(@($ArgumentList)); $registeredAtLaunch.Add((Test-Path -LiteralPath $registrationPath)) }
+        Mock Start-Sleep
+
+        Invoke-DirectStart -RepoPath $t
+
+        $launches.Count | Should -Be 2
+        @($registeredAtLaunch | Where-Object { -not $_ }).Count | Should -Be 0
+        $record = Get-Content -Raw $registrationPath | ConvertFrom-Json
+        $record.transport | Should -Be "direct"
+        $record.configDir | Should -Be (Get-CocopilotConfigDir)
+        $record.agents.'agent-a'.sessionId | Should -Not -Be $record.agents.'agent-b'.sessionId
+        $inner = @($launches | ForEach-Object { [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($_[2])) })
+        $inner[0] | Should -Match ([regex]::Escape("--session-id '$($record.agents.'agent-a'.sessionId)' "))
+        $inner[1] | Should -Match ([regex]::Escape("--session-id '$($record.agents.'agent-b'.sessionId)' "))
+        $inner[0] | Should -Match ([regex]::Escape(" -Transport direct 3>`$null)"))
+        foreach ($script in $inner) {
+            $script | Should -Match ([regex]::Escape("'--max-autopilot-continues' '0' -C ")) -Because "a waiting direct agent must not be nudged by autopilot"
+        }
+    }
+
+    It "keeps a --max-autopilot-continues the caller set, once, and warns" -Tag Slow {
+        $t = New-FakeTarget "start-direct-continues"
+        & $script:initScript -RepoPath $t *>$null
+        $launches = [System.Collections.Generic.List[object]]::new()
+        Mock Start-Process { $launches.Add(@($ArgumentList)) }
+        Mock Start-Sleep
+        Mock Write-Warning
+
+        Invoke-DirectStart -RepoPath $t -AgentAArgs @("--max-autopilot-continues=3")
+
+        $inner = @($launches | ForEach-Object { [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($_[2])) })
+        ([regex]::Matches($inner[0], "max-autopilot-continues")).Count | Should -Be 1
+        $inner[0] | Should -Match ([regex]::Escape("'--max-autopilot-continues=3'"))
+        $inner[1] | Should -Match ([regex]::Escape("'--max-autopilot-continues' '0'"))
+        Should -Invoke Write-Warning -Times 1 -Exactly -ParameterFilter { $Message -like "*-AgentAArgs sets --max-autopilot-continues*" }
+    }
+
+    It "stops before any window or registration when the session tools are off" -Tag Slow {
+        $t = New-FakeTarget "start-direct-off"
+        & $script:initScript -RepoPath $t *>$null
+        $env:FAKE_COPILOT_MODE = "off"
+        Mock Start-Process
+        Mock Start-Sleep
+        { Invoke-DirectStart -RepoPath $t } | Should -Throw "*copilot config sessionManagementTools.enabled on*"
+        Should -Invoke Start-Process -Times 0 -Exactly
+        Test-Path -LiteralPath (Join-Path $t ".mailbox\sessions.json") | Should -BeFalse
+    }
+
+    It "refuses raw arguments that select a session (<Argument>)" -Tag Slow -ForEach @(
+        @{ Argument = "--resume=abc" }, @{ Argument = "--session-id" }
+    ) {
+        $t = New-FakeTarget ("start-direct-conflict-" + ($Argument -replace '[^a-z]', ''))
+        & $script:initScript -RepoPath $t *>$null
+        Mock Start-Process
+        Mock Start-Sleep
+        { Invoke-DirectStart -RepoPath $t -AgentAArgs @("--model", "m", $Argument) } | Should -Throw "*-AgentAArgs contains '$Argument'*"
+        Should -Invoke Start-Process -Times 0 -Exactly
+    }
+
+    It "removes a stale direct registration on a mailbox launch" -Tag Slow {
+        $t = New-FakeTarget "start-direct-reset"
+        & $script:initScript -RepoPath $t *>$null
+        Set-CocopilotSessionRegistration -MailboxDir (Join-Path $t ".mailbox") -RepoPath (Resolve-Path $t).Path -ConfigDir (Get-CocopilotConfigDir) -Agents @{
+            "agent-a" = @{ SessionId = [Guid]::NewGuid().ToString(); Name = "a" }; "agent-b" = @{ SessionId = [Guid]::NewGuid().ToString(); Name = "b" } }
+        $launches = [System.Collections.Generic.List[object]]::new()
+        Mock Start-Process { $launches.Add(@($ArgumentList)) }
+        Mock Start-Sleep
+
+        Invoke-DirectStart -RepoPath $t -Transport mailbox
+
+        Test-Path -LiteralPath (Join-Path $t ".mailbox\sessions.json") | Should -BeFalse
+        $inner = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($launches[0][2]))
+        $inner | Should -Not -Match "--session-id"
+        $inner | Should -Match ([regex]::Escape(" -Transport mailbox 3>`$null)"))
+    }
+}
+
+Describe "render-prompt.ps1 transports" {
+    BeforeEach {
+        $script:t = New-FakeTarget ("render-transport-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
+        & $script:initScript -RepoPath $script:t *>$null
+        $script:t = (Resolve-Path -LiteralPath $script:t).Path
+        $script:savedCopilotHome = $env:COPILOT_HOME
+    }
+
+    AfterEach {
+        if ($null -eq $script:savedCopilotHome) { Remove-Item Env:\COPILOT_HOME -ErrorAction SilentlyContinue } else { $env:COPILOT_HOME = $script:savedCopilotHome }
+    }
+
+    It "renders the mailbox transport when nothing is registered" {
+        $out = & $script:renderScript -Agent a -RepoPath $script:t | Out-String
+        $out | Should -Match "Transport: mailbox"
+        $out | Should -Match "Watch command"
+        $out | Should -Not -Match "-NoWait"
+    }
+
+    It "renders the direct transport from a fitting registration, with both ids and the non-blocking read" {
+        $idA = [Guid]::NewGuid().ToString(); $idB = [Guid]::NewGuid().ToString()
+        Set-CocopilotSessionRegistration -MailboxDir (Join-Path $script:t ".mailbox") -RepoPath $script:t -ConfigDir (Get-CocopilotConfigDir) -Agents @{
+            "agent-a" = @{ SessionId = $idA; Name = "a" }; "agent-b" = @{ SessionId = $idB; Name = "b" } }
+        $out = & $script:renderScript -Agent b -RepoPath $script:t | Out-String
+        $out | Should -Match "Transport: direct"
+        $out | Should -Match ([regex]::Escape("Your session id: $idB"))
+        $out | Should -Match ([regex]::Escape("Peer (agent-a) session id: $idA"))
+        $out | Should -Match ([regex]::Escape("-Role agent-b -NoWait"))
+        $out | Should -Not -Match "Watch command"
+        $out | Should -Match "never run a background watch"
+        $out | Should -Match "Never answer a resync message with another\s+resync"
+        $out | Should -Not -Match '\{\{'
+    }
+
+    It "refuses to guess when a registration exists but belongs to another configuration directory" {
+        Set-CocopilotSessionRegistration -MailboxDir (Join-Path $script:t ".mailbox") -RepoPath $script:t -ConfigDir (Get-CocopilotConfigDir) -Agents @{
+            "agent-a" = @{ SessionId = [Guid]::NewGuid().ToString(); Name = "a" }; "agent-b" = @{ SessionId = [Guid]::NewGuid().ToString(); Name = "b" } }
+        $env:COPILOT_HOME = Join-Path $TestDrive "elsewhere-home"
+        foreach ($transport in @("auto", "mailbox", "direct")) {
+            { & $script:renderScript -Agent a -RepoPath $script:t -Transport $transport } |
+                Should -Throw "*Cannot render a prompt for this pair*configuration directory*Relaunch the pair*" -Because "-Transport $transport must not bypass the check"
+        }
+    }
+
+    It "refuses an explicit mailbox render for a pair registered for direct, and warns on a direct render" {
+        $idA = [Guid]::NewGuid().ToString()
+        Set-CocopilotSessionRegistration -MailboxDir (Join-Path $script:t ".mailbox") -RepoPath $script:t -ConfigDir (Get-CocopilotConfigDir) -Agents @{
+            "agent-a" = @{ SessionId = $idA; Name = "a" }; "agent-b" = @{ SessionId = [Guid]::NewGuid().ToString(); Name = "b" } }
+        { & $script:renderScript -Agent a -RepoPath $script:t -Transport mailbox } | Should -Throw "*registered for the direct transport*Relaunch the pair*"
+        $warnings = @()
+        $out = & $script:renderScript -Agent a -RepoPath $script:t -WarningVariable warnings 3>$null | Out-String
+        $out | Should -Match "Transport: direct"
+        ($warnings -join "`n") | Should -Match ([regex]::Escape("copilot --resume $idA"))
+    }
+
+    It "refuses an explicit direct render without a registration" {
+        { & $script:renderScript -Agent a -RepoPath $script:t -Transport direct } | Should -Throw "*no .mailbox\sessions.json for this pair*"
     }
 }

@@ -160,12 +160,16 @@ function Get-CocopilotRolePrompt {
 
     .DESCRIPTION
         Both peer roles render from one template, so their guidance cannot
-        drift apart. A {{...}} token left after rendering throws instead of
-        reaching an agent.
+        drift apart. The transport picks how the agent waits for its peer:
+        prompts/listening-mailbox.md or prompts/listening-direct.md fills the
+        "Listening for peer changes" section, and three short phrases follow
+        it. A {{...}} token left after rendering throws instead of reaching
+        an agent.
     #>
     param(
         [Parameter(Mandatory)][string]$CocopilotRoot,
-        [Parameter(Mandatory)][ValidateSet("agent-a", "agent-b", "verifier")][string]$AgentRole
+        [Parameter(Mandatory)][ValidateSet("agent-a", "agent-b", "verifier")][string]$AgentRole,
+        [ValidateSet("mailbox", "direct")][string]$Transport = "mailbox"
     )
 
     $promptFile = if ($AgentRole -eq "verifier") { "verifier.md" } else { "agent.md" }
@@ -174,12 +178,34 @@ function Get-CocopilotRolePrompt {
     $text = (Read-CocopilotTextFile -Path $promptPath).Text
     if ($AgentRole -eq "verifier") { return $text }
 
+    $listeningPath = Join-Path $CocopilotRoot "prompts\listening-$Transport.md"
+    if ($text.Contains("{{LISTENING_SECTION}}")) {
+        if (-not (Test-Path -LiteralPath $listeningPath -PathType Leaf)) { throw "Missing prompt file: $listeningPath" }
+        $listening = (Read-CocopilotTextFile -Path $listeningPath).Text.TrimEnd()
+    } else {
+        $listening = ""
+    }
+    if ($Transport -eq "direct") {
+        $deliveryPath = "when you drain the mailbox with the banner's read command, which you do whenever a peer message wakes you"
+        $afterHandling = "drain until ``NO_NEW_ENTRIES`` and end your turn"
+        $idleWait = "drain the mailbox once with the read command, send the one startup resync message (see `"Listening for peer changes`")"
+    } else {
+        $deliveryPath = "through the watch command, which you run in the background"
+        $afterHandling = "re-arm the watch with its ``RE_ARM:`` command"
+        $idleWait = "launch the watch command in the background"
+    }
+
     if ($AgentRole -eq "agent-a") {
         $roleName = "Agent A"; $peerRole = "agent-b"; $peerName = "Agent B"
     } else {
         $roleName = "Agent B"; $peerRole = "agent-a"; $peerName = "Agent A"
     }
+    # The transport text goes in first: it uses the role placeholders too.
     $rendered = $text.
+        Replace("{{LISTENING_SECTION}}", $listening).
+        Replace("{{DELIVERY_PATH}}", $deliveryPath).
+        Replace("{{AFTER_HANDLING}}", $afterHandling).
+        Replace("{{IDLE_WAIT}}", $idleWait).
         Replace("{{ROLE}}", $AgentRole).
         Replace("{{ROLE_NAME}}", $roleName).
         Replace("{{PEER_ROLE}}", $peerRole).
@@ -200,7 +226,8 @@ function Get-CocopilotSessionBanner {
         [Parameter(Mandatory)][string]$RepoPath,
         [Parameter(Mandatory)][string]$CocopilotRoot,
         [Parameter(Mandatory)][ValidateSet("agent-a", "agent-b", "verifier")][string]$AgentRole,
-        [string]$ContextRoot
+        [string]$ContextRoot,
+        [ValidateSet("mailbox", "direct")][string]$Transport = "mailbox"
     )
 
     $collaborationPath = Join-Path $CocopilotRoot "COLLABORATION.md"
@@ -252,7 +279,78 @@ function Get-CocopilotSessionBanner {
     $myLane = Join-Path $RepoPath ".mailbox\$AgentRole.md"
     $peerLane = Join-Path $RepoPath ".mailbox\$peerRole.md"
 
+    if ($Transport -eq "direct") {
+        # The ids come from the registration start-agents.ps1 wrote before
+        # this window opened. write-lane.ps1 re-reads it on every entry, so
+        # a peer that is later re-registered still gets the right hint.
+        $mailboxDir = Join-Path $RepoPath ".mailbox"
+        $registration = Read-CocopilotSessionRegistration -MailboxDir $mailboxDir
+        if ($registration.State -ne "Valid") {
+            $why = if ($registration.State -eq "None") { "it is missing" } else { $registration.Reason }
+            throw "Direct transport needs .mailbox\sessions.json, but $why. Launch the pair with start-agents.ps1 -Transport direct."
+        }
+        $record = $registration.Record
+        if ($record.target -ine $RepoPath) {
+            throw "Direct transport: .mailbox\sessions.json belongs to target '$($record.target)', not '$RepoPath'. Launch the pair with start-agents.ps1 -Transport direct."
+        }
+        $configDir = Get-CocopilotConfigDir
+        if ($record.configDir -ine $configDir) {
+            throw "Direct transport: .mailbox\sessions.json was registered for Copilot configuration directory '$($record.configDir)', but this shell uses '$configDir'. Launch the pair with start-agents.ps1 -Transport direct."
+        }
+        $ownId = [string]$record.agents.$AgentRole.sessionId
+        $peerId = [string]$record.agents.$peerRole.sessionId
+        if (-not $ownId -or -not $peerId) {
+            throw "Direct transport: .mailbox\sessions.json does not register both agents. Launch the pair with start-agents.ps1 -Transport direct."
+        }
+        $readCmd = "$watchCmd -NoWait"
+        return $core + @"
+
+- Transport: direct — $peerRole wakes you with a native peer message
+  (send_session_message); you never run a background watch.
+- Your session id: $ownId
+- Peer ($peerRole) session id: $peerId
+  (registered in $mailboxDir\sessions.json for Copilot configuration
+  directory $($record.configDir); restart a closed window with
+  copilot --resume <its id> to keep it registered)
+
+- Your lane (the ONLY mailbox file you may write): $myLane
+- Peer lane (read-only to you): $peerLane
+
+- Lane write command (the preferred way to post a lane entry — build
+  `$turn as the raw turn body first, no timestamp or "## ..." heading
+  of your own, then run verbatim; appends to the session log FIRST and
+  overwrites your own lane LAST, exactly as the protocol requires, then
+  prints the NOTIFY_PEER send_session_message call that wakes the peer.
+  Run EXACTLY as given below — -Role is already correct for you here, but
+  the command cannot itself verify who is calling it, so never edit the
+  -Role value. Add -VerifyRequest when the turn is a VERIFY_REQUEST, to
+  pin it for the fresh-eyes verifier):
+  $writeLaneCmd
+- Read command (drains the mailbox without waiting: delivers the peer's
+  unacknowledged entries, or prints NO_NEW_ENTRIES and the ownership
+  record — run it on every peer message and at the start of every turn;
+  after handling a delivery, run the RE_ARM command it printed, which
+  acknowledges what you handled and reads again, until NO_NEW_ENTRIES):
+  $readCmd
+- Init command (only if implementer.json, a lane file or session.log.md
+  is missing — never because a cursor or verify-request.md is missing;
+  without a cursor, your first read replays the whole log):
+  $initCmd
+- Handoff command (the ONLY allowed way to change implementer.json; it
+  checks the record, takes the ownership lock and prints the entry to
+  post in your lane. Accept and Cancel need -Epoch <n> from the offer;
+  SetModel needs -OwnerModel <model>; Accept takes it too):
+  $handoffCmd
+
+---
+
+"@
+    }
+
     return $core + @"
+
+- Transport: mailbox — you wait for the peer with the background watch
+  command below.
 
 - Your lane (the ONLY mailbox file you may write): $myLane
 - Peer lane (read-only to you): $peerLane

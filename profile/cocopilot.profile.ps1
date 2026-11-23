@@ -43,6 +43,8 @@ function cocopilot-start {
     # repo (see init-mailbox.ps1 -AllowNonGit). -Name/-SessionName names both
     # agent windows/tabs "<name> - agent a/b". Assign models/settings with
     # the typed AgentA*/AgentB* parameters; omitted models open the picker.
+    # -Transport direct wakes the agents with native peer messages instead
+    # of background watches (see start-agents.ps1 -Transport).
     # Advanced, like every named cocopilot command: a mistyped switch is an
     # error instead of being silently ignored.
     [CmdletBinding()]
@@ -63,14 +65,15 @@ function cocopilot-start {
         [ValidateSet("none", "minimal", "low", "medium", "high", "xhigh", "max")][string]$AgentBEffort,
         [ValidateSet("default", "long_context")][string]$AgentBContext,
         [switch]$AllowNonGit,
-        [switch]$UseWindowsTerminal
+        [switch]$UseWindowsTerminal,
+        [ValidateSet("mailbox", "direct")][string]$Transport
     )
     Initialize-CocopilotMailboxIfMissing -RepoPath $RepoPath -AllowNonGit:$AllowNonGit
     $extra = @{}
     foreach ($parameterName in @(
         "ContextRoot", "SessionName", "NameA", "NameB",
         "AgentACommand", "AgentAArgs", "AgentAModel", "AgentAEffort", "AgentAContext",
-        "AgentBCommand", "AgentBArgs", "AgentBModel", "AgentBEffort", "AgentBContext"
+        "AgentBCommand", "AgentBArgs", "AgentBModel", "AgentBEffort", "AgentBContext", "Transport"
     )) {
         if ($PSBoundParameters.ContainsKey($parameterName)) {
             $extra[$parameterName] = $PSBoundParameters[$parameterName]
@@ -100,14 +103,20 @@ function cocopilot-prompt {
     # session-context banner + role instructions, fully resolved to
     # $RepoPath. Paste into a fresh copilot-opus/copilot-sol window if
     # one crashes or you add a role manually; "verifier" renders the
-    # read-only fresh-eyes role for a brand-new session. -AllowNonGit pairs
+    # read-only fresh-eyes role for a brand-new session. In a pair launched
+    # with -Transport direct a fresh window cannot be woken by its peer:
+    # restart a crashed window with `copilot --resume <its registered id>`
+    # instead (render-prompt.ps1 warns with that id). -AllowNonGit pairs
     # directly on a workspace root that isn't itself a git repo (see
-    # init-mailbox.ps1 -AllowNonGit).
+    # init-mailbox.ps1 -AllowNonGit). -Transport only asserts the pair's
+    # transport; the default "auto" follows its .mailbox/sessions.json (see
+    # render-prompt.ps1 -Transport).
     param(
         [Parameter(Mandatory)][ValidateSet("a", "b", "verifier")][string]$Agent,
         [string]$RepoPath = (Get-Location).Path,
         [string]$ContextRoot,
-        [switch]$AllowNonGit
+        [switch]$AllowNonGit,
+        [ValidateSet("auto", "mailbox", "direct")][string]$Transport = "auto"
     )
     if ($Agent -eq "verifier") {
         # The verifier is read-only end to end: never initialize for it. It
@@ -122,7 +131,7 @@ function cocopilot-prompt {
     }
     $extra = @{}
     if ($ContextRoot) { $extra.ContextRoot = $ContextRoot }
-    $prompt = & (Join-Path $script:CocopilotRoot "scripts\render-prompt.ps1") -Agent $Agent -RepoPath $RepoPath @extra
+    $prompt = & (Join-Path $script:CocopilotRoot "scripts\render-prompt.ps1") -Agent $Agent -RepoPath $RepoPath -Transport $Transport @extra
     $prompt | Set-Clipboard
     Write-Host "cocopilot $(if ($Agent -eq 'verifier') { 'verifier' } else { "agent-$Agent" }) prompt for '$RepoPath' copied to clipboard - paste it into that window." -ForegroundColor Green
 }

@@ -17,7 +17,8 @@ function Get-CocopilotMailboxFileNames {
     #>
     return @(
         "implementer.json", "agent-a.md", "agent-b.md", "session.log.md",
-        "agent-a.cursor", "agent-b.cursor", "verify-request.md", "implementer.lock"
+        "agent-a.cursor", "agent-b.cursor", "verify-request.md", "implementer.lock",
+        "sessions.json", "sessions.lock"
     )
 }
 
@@ -71,20 +72,36 @@ function Enter-CocopilotOwnershipLock {
         [ValidateRange(0, 60000)][int]$RetryMilliseconds = 10000
     )
 
-    $lockPath = Join-Path $MailboxDir "implementer.lock"
+    return Enter-CocopilotMailboxLock -LockPath (Join-Path $MailboxDir "implementer.lock") -Purpose "ownership" -RetryMilliseconds $RetryMilliseconds
+}
+
+function Enter-CocopilotMailboxLock {
+    <#
+    .SYNOPSIS
+        Opens one mailbox lock file exclusively and returns its handle; dispose
+        the handle to release the lock. Enter-CocopilotOwnershipLock and
+        Enter-CocopilotRegistrationLock share this, each with its own file, so
+        a registration update never waits on an ownership update.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$LockPath,
+        [Parameter(Mandatory)][string]$Purpose,
+        [ValidateRange(0, 60000)][int]$RetryMilliseconds = 10000
+    )
+
     $deadline = [DateTime]::UtcNow.AddMilliseconds($RetryMilliseconds)
     while ($true) {
         try {
-            return [System.IO.FileStream]::new($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite,
+            return [System.IO.FileStream]::new($LockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite,
                 [System.IO.FileShare]::None, 1, [System.IO.FileOptions]::DeleteOnClose)
         } catch {
             if (-not (Test-CocopilotHeldDestination -Exception $_.Exception)) { throw }
             if ([DateTime]::UtcNow -ge $deadline) {
                 if (Test-CocopilotSharingViolation -Exception $_.Exception) {
-                    throw "Another ownership update still holds '$lockPath'; nothing was changed. Try again."
+                    throw "Another $Purpose update still holds '$LockPath'; nothing was changed. Try again."
                 }
                 $cause = Get-CocopilotInnerException -Exception $_.Exception
-                throw ("Opening the ownership lock '$lockPath' kept failing because access was denied (a released lock file " +
+                throw ("Opening the $Purpose lock '$LockPath' kept failing because access was denied (a released lock file " +
                     "still being deleted, or missing permissions): $($cause.Message) Nothing was changed.")
             }
             Start-Sleep -Milliseconds 50

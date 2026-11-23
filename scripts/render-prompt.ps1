@@ -25,6 +25,19 @@
     "Workspace context"). When pasting manually, also launch the copilot
     window with --add-dir <ContextRoot> so the CLI can actually reach it.
 
+.PARAMETER Transport
+    Which waiting guidance and banner commands to render: "mailbox" (the
+    background watch) or "direct" (native peer messages, see
+    start-agents.ps1 -Transport). The pair's registration decides: direct
+    when .mailbox/sessions.json fits this target and Copilot configuration
+    directory, mailbox when there is none. "auto" (the default) follows it;
+    an explicit value only asserts it. Any mismatch, or a registration that
+    exists but does not fit, stops with the reason, so the two agents of a
+    pair never end up on different transports. Rendering never registers a
+    session: a direct prompt only works in the window whose session id the
+    registration names, for example one restarted with
+    `copilot --resume <id>`, and a warning says so.
+
 .EXAMPLE
     .\scripts\render-prompt.ps1 -Agent b -RepoPath C:\Repos\some-other-project
     # copy the output and paste it into your second copilot window
@@ -32,7 +45,8 @@
 param(
     [Parameter(Mandatory)][ValidateSet("a", "b", "verifier")][string]$Agent,
     [string]$RepoPath = (Get-Location).Path,
-    [string]$ContextRoot
+    [string]$ContextRoot,
+    [ValidateSet("auto", "mailbox", "direct")][string]$Transport = "auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,6 +62,40 @@ switch ($Agent) {
     "verifier" { $agentRole = "verifier" }
 }
 
-$rolePrompt = Get-CocopilotRolePrompt -CocopilotRoot $cocopilotRoot -AgentRole $agentRole
-$banner = Get-CocopilotSessionBanner -RepoPath $RepoPath -CocopilotRoot $cocopilotRoot -AgentRole $agentRole -ContextRoot $ContextRoot
+if ($agentRole -eq "verifier") {
+    # The verifier never talks to the pair, so the transport does not apply.
+    $Transport = "mailbox"
+} else {
+    # Both agents of a pair must use the transport the pair was launched
+    # with, or a direct agent could wait forever for a hint its mailbox peer
+    # never sends. Rendering only checks this; it never changes the
+    # registration. Only start-agents.ps1 registers or removes it.
+    $probe = Get-CocopilotPeerNotification -MailboxDir (Join-Path $RepoPath ".mailbox") -RepoPath $RepoPath -Role $agentRole -ConfigDir (Get-CocopilotConfigDir)
+    $relaunch = "Relaunch the pair with start-agents.ps1 -Transport mailbox or -Transport direct."
+    switch ($probe.State) {
+        "None" {
+            if ($Transport -eq "direct") {
+                throw "Cannot render the direct transport: there is no .mailbox\sessions.json for this pair. $relaunch"
+            }
+            $Transport = "mailbox"
+        }
+        "Ready" {
+            if ($Transport -eq "mailbox") {
+                throw "Cannot render the mailbox transport: this pair is registered for the direct transport (.mailbox\sessions.json), so its peer would never be woken. $relaunch"
+            }
+            $Transport = "direct"
+        }
+        default { throw "Cannot render a prompt for this pair: $($probe.Reason) $relaunch" }
+    }
+}
+
+$rolePrompt = Get-CocopilotRolePrompt -CocopilotRoot $cocopilotRoot -AgentRole $agentRole -Transport $Transport
+$banner = Get-CocopilotSessionBanner -RepoPath $RepoPath -CocopilotRoot $cocopilotRoot -AgentRole $agentRole -ContextRoot $ContextRoot -Transport $Transport
+if ($Transport -eq "direct") {
+    # The warning stream, so it never becomes part of the copied prompt.
+    $ownId = (Read-CocopilotSessionRegistration -MailboxDir (Join-Path $RepoPath ".mailbox")).Record.agents.$agentRole.sessionId
+    Write-Warning ("This direct-transport prompt works only in the Copilot session $ownId, the one the pair registered. " +
+        "A new window gets another session id, so its peer could not wake it: restart a closed window with " +
+        "'copilot --resume $ownId' instead, or relaunch the pair.")
+}
 $banner + $rolePrompt
