@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Mailbox file names, mailbox and template checks, tracked-path checks
+    Mailbox file names, mailbox and install checks, tracked-path checks
     and the ownership lock. _common.ps1 dot-sources this file; don't run
     it directly.
 #>
@@ -166,19 +166,43 @@ function Get-CocopilotMailboxFileCheck {
     return [pscustomobject]@{ State = "Cocopilot"; Reason = $null }
 }
 
-function Test-CocopilotTemplatesPresent {
+function Test-IsCocopilotInstall {
     <#
     .SYNOPSIS
-        True when $RepoPath\.mailbox holds cocopilot's own tracked templates -
-        i.e. $RepoPath is a cocopilot install, whatever path reached it
-        (junction, symlink, subst, mapped drive or a plain copy).
-    #>
-    param([Parameter(Mandatory)][string]$RepoPath)
+        True when $Path is the running cocopilot install $CocopilotRoot,
+        by path or through an alias (junction, symlink, subst or mapped
+        drive). A separate clone or worktree of cocopilot is not the
+        install, so it can be a pairing target.
 
-    foreach ($name in @("implementer.example.json", "lane.example.md")) {
-        if (Test-Path -LiteralPath (Join-Path $RepoPath ".mailbox\$name")) { return $true }
+    .DESCRIPTION
+        A path compare misses aliases, so a uniquely named probe file is
+        written to the install root and looked up under $Path. The probe is
+        git-ignored and always removed. If the probe cannot be written (a
+        read-only install), only the path compare applies.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$CocopilotRoot
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $fullRoot = [System.IO.Path]::GetFullPath($CocopilotRoot).TrimEnd('\', '/')
+    if ($fullPath -ieq $fullRoot) { return $true }
+
+    $probeName = ".cocopilot-identity-{0}.tmp" -f [Guid]::NewGuid().ToString("N")
+    $probePath = Join-Path $fullRoot $probeName
+    try {
+        [System.IO.File]::WriteAllText($probePath, "")
+    } catch {
+        return $false
     }
-    return $false
+    try {
+        return (Test-Path -LiteralPath (Join-Path $fullPath $probeName) -PathType Leaf)
+    } finally {
+        # [IO.File]::Delete, not Remove-Item: a caller's -WhatIf must never
+        # leave the probe behind.
+        [System.IO.File]::Delete($probePath)
+    }
 }
 
 function Get-CocopilotTrackedMailboxPaths {

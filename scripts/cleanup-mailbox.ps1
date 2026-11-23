@@ -11,9 +11,9 @@
     into a project you're pairing on, and it never deletes anything it did
     not create. For a single target this script:
 
-      1. Refuses, before changing anything, when the target is a cocopilot
-         install (its own path, or any path to a directory whose .mailbox/
-         holds cocopilot's *.example.* templates), when git tracks anything
+      1. Refuses, before changing anything, when the target is the cocopilot
+         install running this script (its own path, or an alias such as a
+         junction, symlink or subst drive to it), when git tracks anything
          under .mailbox/, when .mailbox/ is a reparse point, or when the
          mailbox is not cocopilot's (its implementer.json is not an
          ownership record, or session.log.md lacks cocopilot's marker).
@@ -87,16 +87,14 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "_common.ps1")
 
 # This very file's own parent directory - i.e. wherever THIS cocopilot
-# install lives on disk, regardless of where it was cloned to. cocopilot's
-# own repo is never a valid cleanup target: its .mailbox/ intentionally
-# tracks the *.example.* templates init-mailbox.ps1 reads from. The
-# template check (Test-CocopilotTemplatesPresent) also catches the same
-# install reached through an alias path, where this string compare cannot.
-$script:CocopilotOwnRoot = (Split-Path -Parent $PSScriptRoot).TrimEnd('\', '/')
+# install lives on disk. It is never a cleanup target (init-mailbox.ps1
+# never pairs on it); Test-IsCocopilotInstall also catches the install
+# reached through an alias path.
+$script:CocopilotOwnRoot = Split-Path -Parent $PSScriptRoot
 
 function Test-IsCocopilotOwnRoot {
     param([Parameter(Mandatory)][string]$Path)
-    return ([System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')) -ieq $script:CocopilotOwnRoot
+    return Test-IsCocopilotInstall -Path $Path -CocopilotRoot $script:CocopilotOwnRoot
 }
 
 function Invoke-SingleMailboxCleanup {
@@ -121,14 +119,9 @@ function Invoke-SingleMailboxCleanup {
 
     # Every refusal runs before the first change.
     if (Test-IsCocopilotOwnRoot -Path $RepoPath) {
-        throw ("'$RepoPath' is cocopilot's own installed repo, not a project you were pairing on. " +
-            "Its .mailbox/ intentionally tracks the *.example.* templates that init-mailbox.ps1 reads from " +
-            "(see README.md/COLLABORATION.md) - cleaning up here would delete them. cd into the project " +
-            "repo you actually paired on and re-run cocopilot-cleanup there instead.")
-    }
-    if (Test-CocopilotTemplatesPresent -RepoPath $RepoPath) {
-        throw ("'$RepoPath' holds cocopilot's *.example.* templates under .mailbox/ - it is a cocopilot install " +
-            "(possibly reached through an alias path), never a cleanup target.")
+        throw ("'$RepoPath' is cocopilot's own installed repo (by path or alias), not a project you were pairing on. " +
+            "cd into the project repo (or cocopilot worktree/clone) you actually paired on and re-run " +
+            "cocopilot-cleanup there instead.")
     }
 
     $mailboxDir = Join-Path $RepoPath ".mailbox"
@@ -278,18 +271,13 @@ function Find-MailboxTarget {
 
         $mailboxCandidate = Join-Path $current ".mailbox"
         if (Test-Path -LiteralPath $mailboxCandidate -PathType Container) {
-            # A cocopilot install (by path, or by its templates when reached
-            # through an alias) is never a valid cleanup target - reported
-            # as a discovery issue rather than failing loudly mid-Recurse.
+            # The running cocopilot install (by path or alias) is never a
+            # valid cleanup target - reported as a discovery issue rather
+            # than failing loudly mid-Recurse.
             if (Test-IsCocopilotOwnRoot -Path $current) {
                 $failures.Add([pscustomobject]@{
                     Path  = $mailboxCandidate
-                    Error = "This is cocopilot's own installed repo - its .mailbox/ intentionally tracks the *.example.* templates and must never be treated as a cleanup target."
-                })
-            } elseif (Test-CocopilotTemplatesPresent -RepoPath $current) {
-                $failures.Add([pscustomobject]@{
-                    Path  = $mailboxCandidate
-                    Error = "This .mailbox/ holds cocopilot's *.example.* templates - a cocopilot install (possibly reached through an alias path), never a cleanup target."
+                    Error = "This is cocopilot's own installed repo (by path or alias) - never a cleanup target."
                 })
             } else {
                 # A .mailbox that is itself a reparse point (symlink/junction/

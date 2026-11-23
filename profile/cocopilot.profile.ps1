@@ -7,17 +7,17 @@ $script:CocopilotRoot = Split-Path -Parent $PSScriptRoot
 
 function copilot-opus {
     # Plain copilot CLI pinned to claude-opus-5.5 with cocopilot's default flags.
-    copilot --model claude-opus-5.5 --effort max --context long_context --autopilot --allow-all @args
+    copilot --model claude-opus-5.5 --effort medium --context long_context --autopilot --allow-all @args
 }
 
 function copilot-terra {
     # Plain copilot CLI pinned to gpt-5.6-terra with cocopilot's default flags.
-    copilot --model gpt-5.6-terra --effort max --context long_context --autopilot --allow-all @args
+    copilot --model gpt-5.6-terra --effort medium --context long_context --autopilot --allow-all @args
 }
 
 function copilot-sol {
     # Plain copilot CLI pinned to gpt-6.1-sol with cocopilot's default flags.
-    copilot --model gpt-6.1-sol --effort max --context long_context --autopilot --allow-all @args
+    copilot --model gpt-6.1-sol --effort medium --context long_context --autopilot --allow-all @args
 }
 
 function Initialize-CocopilotMailboxIfMissing {

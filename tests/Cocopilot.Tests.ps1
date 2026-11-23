@@ -44,11 +44,8 @@ BeforeAll {
         param([Parameter(Mandatory)][string]$Name)
         $copy = New-FakeTarget $Name
         Copy-Item -LiteralPath $script:scriptsDir -Destination (Join-Path $copy "scripts") -Recurse
-        New-Item -ItemType Directory -Force -Path (Join-Path $copy ".mailbox") | Out-Null
-        foreach ($template in @("implementer.example.json", "lane.example.md")) {
-            Copy-Item -LiteralPath (Join-Path $script:repoRoot ".mailbox\$template") -Destination (Join-Path $copy ".mailbox\$template")
-        }
-        git -C $copy add -- .mailbox 2>$null | Out-Null
+        Copy-Item -LiteralPath (Join-Path $script:repoRoot "templates") -Destination (Join-Path $copy "templates") -Recurse
+        git -C $copy add -- templates 2>$null | Out-Null
         return $copy
     }
 
@@ -413,22 +410,33 @@ Describe "init-mailbox.ps1 (R0/R1)" {
     It "refuses a cocopilot install as a target, by its own path or through an alias" {
         # The copy's own init runs against the copy, so the checkout under
         # test is never a target; the junction alias defeats a path compare
-        # and must be caught by the templates themselves.
+        # and must be caught by the identity probe.
         $copy = New-CocopilotCopy "self-init"
         $copyInit = Join-Path $copy "scripts\init-mailbox.ps1"
         { & $copyInit -RepoPath $copy *>$null } | Should -Throw "*cocopilot's own installed repo*"
         $alias = Join-Path $TestDrive "self-init-alias"
         New-Item -ItemType Junction -Path $alias -Target $copy | Out-Null
         try {
-            { & $copyInit -RepoPath $alias *>$null } | Should -Throw "*templates*"
+            { & $copyInit -RepoPath $alias *>$null } | Should -Throw "*cocopilot's own installed repo*"
         } finally {
             # Link only, never its target: Pester's TestDrive cleanup is not
             # reparse-point-aware.
             [System.IO.Directory]::Delete($alias, $false)
         }
-        Test-Path (Join-Path $copy ".mailbox\implementer.json") | Should -BeFalse
+        Test-Path (Join-Path $copy ".mailbox") | Should -BeFalse
         Test-Path (Join-Path $copy ".gitignore") | Should -BeFalse
         (Get-Content -Raw (Join-Path $copy ".git\info\exclude")) | Should -Not -Match "cocopilot mailbox"
+        @(Get-ChildItem -LiteralPath $copy -Force -Filter ".cocopilot-identity-*").Count | Should -Be 0
+    }
+
+    It "pairs on a separate clone of cocopilot, so cocopilot can work on itself" {
+        $clone = New-CocopilotCopy "self-clone"
+        & $script:initScript -RepoPath $clone *>$null
+        Test-Path (Join-Path $clone ".mailbox\implementer.json") | Should -BeTrue
+        (@(git -C $clone ls-files -- templates) -join "|") | Should -Be "templates/implementer.example.json|templates/lane.example.md"
+        # The identity probe is removed even under -WhatIf.
+        & $script:cleanupScript -RepoPath $clone -WhatIf *>$null
+        @(Get-ChildItem -LiteralPath $script:repoRoot -Force -Filter ".cocopilot-identity-*").Count | Should -Be 0
     }
 }
 
@@ -1610,20 +1618,18 @@ Describe "cleanup-mailbox.ps1 (R0)" {
     It "refuses a cocopilot install as a target, by its own path or through an alias" {
         # The copy's own cleanup runs against the copy, so the checkout under
         # test is never a target; the junction alias defeats a path compare
-        # and must be caught by the templates themselves.
+        # and must be caught by the identity probe.
         $copy = New-CocopilotCopy "self-cleanup"
         $copyCleanup = Join-Path $copy "scripts\cleanup-mailbox.ps1"
         { & $copyCleanup -RepoPath $copy -Confirm:$false *>$null } | Should -Throw "*cocopilot's own installed repo*"
         $alias = Join-Path $TestDrive "self-cleanup-alias"
         New-Item -ItemType Junction -Path $alias -Target $copy | Out-Null
         try {
-            { & $copyCleanup -RepoPath $alias -Confirm:$false *>$null } | Should -Throw "*templates*"
+            { & $copyCleanup -RepoPath $alias -Confirm:$false *>$null } | Should -Throw "*cocopilot's own installed repo*"
         } finally {
             [System.IO.Directory]::Delete($alias, $false)
         }
-        Test-Path (Join-Path $copy ".mailbox\implementer.example.json") | Should -BeTrue
-        Test-Path (Join-Path $copy ".mailbox\lane.example.md") | Should -BeTrue
-        (@(git -C $copy ls-files -- .mailbox) -join "|") | Should -Be ".mailbox/implementer.example.json|.mailbox/lane.example.md"
+        (@(git -C $copy ls-files -- templates) -join "|") | Should -Be "templates/implementer.example.json|templates/lane.example.md"
     }
 }
 
@@ -1766,20 +1772,22 @@ Describe "cleanup-mailbox.ps1 -Recurse" {
         Test-Path (Join-Path $bad ".mailbox") | Should -BeTrue
     }
 
-    It "reports a cocopilot install as a discovery issue, without deleting its templates" {
+    It "reports a .mailbox in the cocopilot install as a discovery issue, without deleting it" {
         # Regression test for `cocopilot-cleanup -RepoPath <workspace> -Recurse`
-        # walking over a workspace that contains a cocopilot checkout: it must
-        # be reported as a discovery issue, never treated as a cleanup target,
-        # and its tracked templates must survive. The copy's own script walks
+        # walking over a workspace that contains the cocopilot install: a
+        # .mailbox/ there must be reported as a discovery issue, never treated
+        # as a cleanup target, and must survive. The copy's own script walks
         # the copy, so the checkout under test is never a target.
         $copy = New-CocopilotCopy "self-recurse"
+        $stray = Join-Path $copy ".mailbox\agent-a.md"
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stray) | Out-Null
+        [System.IO.File]::WriteAllText($stray, "lane`n", $script:utf8NoBom)
         $outFile = Join-Path $TestDrive "recurse-self-output.txt"
         { & (Join-Path $copy "scripts\cleanup-mailbox.ps1") -RepoPath $copy -Recurse -Confirm:$false *> $outFile } | Should -Throw
         $output = Get-Content -Raw $outFile
         $output | Should -Match "Mailboxes found:\s*0"
         $output | Should -Match "cocopilot's own installed repo"
-        Test-Path (Join-Path $copy ".mailbox\implementer.example.json") | Should -BeTrue
-        Test-Path (Join-Path $copy ".mailbox\lane.example.md") | Should -BeTrue
+        Test-Path -LiteralPath $stray | Should -BeTrue
     }
 
     It "skips a foreign .mailbox, leaves it untouched and does not fail because of it" -Tag Slow {
@@ -2041,6 +2049,17 @@ esac
         $models | Should -Be @("auto", "claude-sonnet-5", "gpt-6.1-sol")
     }
 
+    It "parses double-quoted model choices from Copilot's bash completion" {
+        $completion = @'
+                --model)
+                    COMPREPLY=($(compgen -W "auto claude-opus-5.5 gpt-6.1-sol" -- "${cur}"))
+                    return 0
+                    ;;
+'@
+        $models = @(ConvertFrom-CocopilotCompletionModels -CompletionText $completion)
+        $models | Should -Be @("auto", "claude-opus-5.5", "gpt-6.1-sol")
+    }
+
     It "maps live model metadata to supported effort and context settings" {
         $model = @'
 {
@@ -2202,30 +2221,27 @@ esac
         } | Should -Throw "*does not support effort 'max'*"
     }
 
-    It "defaults the effort picker to the strongest known effort, whatever the SDK order or default" {
-        $model = '{"id":"gpt-test","name":"GPT Test","supportedReasoningEfforts":["high","max","low"],"defaultReasoningEffort":"high","capabilities":{"limits":{"max_context_window_tokens":200000}}}' |
+    It "defaults the effort picker to medium, whatever the SDK order or default" {
+        $model = '{"id":"gpt-test","name":"GPT Test","supportedReasoningEfforts":["high","max","medium","low"],"defaultReasoningEffort":"high","capabilities":{"limits":{"max_context_window_tokens":200000}}}' |
             ConvertFrom-Json
         $descriptor = ConvertTo-CocopilotModelDescriptor -Model $model -Source account
         Mock Read-Host { "" }
 
         $configuration = Resolve-CocopilotAgentModelConfiguration -Model $descriptor -RoleLabel "Agent A" -PromptForSettings
 
-        $configuration.Effort | Should -Be "max"
+        $configuration.Effort | Should -Be "medium"
     }
 
-    It "shows effort values it cannot rank instead of guessing where they rank" {
+    It "keeps the Copilot CLI's default effort when the model does not offer medium" {
+        $model = '{"id":"gpt-test","name":"GPT Test","supportedReasoningEfforts":["low","high"],"capabilities":{"limits":{"max_context_window_tokens":200000}}}' |
+            ConvertFrom-Json
+        $descriptor = ConvertTo-CocopilotModelDescriptor -Model $model -Source account
         Mock Read-Host { "" }
-        Mock Write-Warning
 
-        $mixed = '{"id":"gpt-mixed","name":"Mixed","supportedReasoningEfforts":["ultra","high"],"capabilities":{"limits":{"max_context_window_tokens":200000}}}' | ConvertFrom-Json
-        (Resolve-CocopilotAgentModelConfiguration -Model (ConvertTo-CocopilotModelDescriptor -Model $mixed -Source account) -RoleLabel "Agent A" -PromptForSettings).Effort |
-            Should -Be "high"
-        Should -Invoke Write-Warning -Times 1 -Exactly -ParameterFilter { $Message -match "ultra" -and $Message -match "'high'" }
+        $configuration = Resolve-CocopilotAgentModelConfiguration -Model $descriptor -RoleLabel "Agent A" -PromptForSettings
 
-        $unknownOnly = '{"id":"gpt-unknown","name":"Unknown","supportedReasoningEfforts":["ultra"],"capabilities":{"limits":{"max_context_window_tokens":200000}}}' | ConvertFrom-Json
-        (Resolve-CocopilotAgentModelConfiguration -Model (ConvertTo-CocopilotModelDescriptor -Model $unknownOnly -Source account) -RoleLabel "Agent B" -PromptForSettings).Effort |
-            Should -BeNullOrEmpty
-        Should -Invoke Write-Warning -Times 1 -Exactly -ParameterFilter { $Message -match "no default is preselected" }
+        $configuration.Effort | Should -BeNullOrEmpty
+        Should -Invoke Read-Host -Times 1 -Exactly -ParameterFilter { $Prompt -match "effort.*\[cli-default\]$" }
     }
 
     It "builds the typed Copilot argument array in launch order" {
@@ -2273,13 +2289,17 @@ esac
             function New-StubCopilotSdk {
                 # Stands in for the SDK bundled with the CLI; it never starts a
                 # Copilot runtime. listModels() runs $ListModelsBody.
-                param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$ListModelsBody)
+                param(
+                    [Parameter(Mandatory)][string]$Name,
+                    [Parameter(Mandatory)][string]$ListModelsBody,
+                    [string]$RuntimeConnectionExport = 'export const RuntimeConnection = { forStdio: (options) => options };'
+                )
                 $directory = Join-Path $TestDrive $Name
                 New-Item -ItemType Directory -Force -Path $directory | Out-Null
                 $module = @(
                     'import { spawn } from "node:child_process";'
                     'import { writeFileSync } from "node:fs";'
-                    'export const RuntimeConnection = { forStdio: (options) => options };'
+                    $RuntimeConnectionExport
                     'export class CopilotClient {'
                     '  constructor(options) { this.options = options; }'
                     '  async start() {}'
@@ -2308,6 +2328,22 @@ esac
 
             $models.Count | Should -Be 1
             $models[0].Id | Should -Be "stub-model"
+        }
+
+        It "uses the runtime options of an SDK that offers forSpawnedStdio" -Tag Slow {
+            if (-not $script:nodeForTests) { Set-ItResult -Skipped -Because "Node.js is not on PATH" }
+            $sdk = New-StubCopilotSdk -Name "sdk-spawned-stdio" `
+                -RuntimeConnectionExport 'export const RuntimeConnection = { forSpawnedStdio: (options) => options };' `
+                -ListModelsBody (
+                    'if (this.options.mode !== "coding-agent" || this.options.runtime?.path !== "C:\\stub\\copilot.exe") ' +
+                    '{ throw new Error("unexpected options: " + JSON.stringify(this.options)); } ' +
+                    'return [{ id: "spawned-model", name: "Spawned", capabilities: { supports: {}, limits: { max_context_window_tokens: 1000 } } }];')
+            Mock Find-CocopilotSdkPath { $sdk }
+
+            $models = @(Invoke-CocopilotSdkModelQuery -CopilotCommand "copilot-test")
+
+            $models.Count | Should -Be 1
+            $models[0].Id | Should -Be "spawned-model"
         }
 
         It "stops a query that does not finish, together with the processes it started" -Tag Slow {
@@ -2442,14 +2478,20 @@ Describe "install.ps1 + profile snippet" {
         @($errors).Count | Should -Be 0
     }
 
-    It "defines a copilot-sol shortcut with GPT-6.1 Sol long-context defaults" {
+    It "defines copilot-opus/-terra/-sol shortcuts with medium-effort long-context defaults" {
         $arguments = & {
             function copilot { $args -join "|" }
             . $script:snippetPath
+            copilot-opus "extra-argument"
+            copilot-terra "extra-argument"
             copilot-sol "extra-argument"
         }
 
-        $arguments | Should -Be "--model|gpt-6.1-sol|--effort|max|--context|long_context|--autopilot|--allow-all|extra-argument"
+        $arguments | Should -Be @(
+            "--model|claude-opus-5.5|--effort|medium|--context|long_context|--autopilot|--allow-all|extra-argument"
+            "--model|gpt-5.6-terra|--effort|medium|--context|long_context|--autopilot|--allow-all|extra-argument"
+            "--model|gpt-6.1-sol|--effort|medium|--context|long_context|--autopilot|--allow-all|extra-argument"
+        )
     }
 
     It "suggests GPT-6.1 Sol for agent-b when both Sol versions are available" -Tag Slow {

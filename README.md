@@ -68,15 +68,16 @@ cocopilot-cleanup
 
 # Or skip the picker with explicit role assignments:
 cocopilot-start -Name "12313 polis" `
-    -AgentAModel claude-opus-5.5 -AgentAEffort max -AgentAContext long_context `
-    -AgentBModel gpt-6.1-sol    -AgentBEffort max -AgentBContext long_context
+    -AgentAModel claude-opus-5.5 -AgentAEffort medium -AgentAContext long_context `
+    -AgentBModel gpt-6.1-sol    -AgentBEffort medium -AgentBContext long_context
 ```
 
 The two tabs and Copilot sessions are named **`12313 polis - agent a`** and **`12313 polis - agent b`**. Agent A still
 starts as the driver and Agent B as the navigator. The picker only decides which model and settings get each fixed lane
 identity. Pressing Enter through the picker keeps the suggested pairing when those models are available:
-`claude-opus-5.5` for Agent A and `gpt-6.1-sol` for Agent B. The picker preselects each model's strongest supported
-effort (ranked `max` > `xhigh` > `high` > `medium` > `low` > `minimal` > `none`) and long context where available.
+`claude-opus-5.5` for Agent A and `gpt-6.1-sol` for Agent B.
+The picker preselects `medium` effort and long context where the model supports them.
+For a model without `medium` effort, the picker preselects `cli-default`, the Copilot CLI's model default.
 
 > `-RepoPath` defaults to the current directory, so you can also just `cd` into the target project first.
 
@@ -180,9 +181,18 @@ Git target not already ignoring `.mailbox/`, it adds a managed rule to the repos
 creating any mailbox state. Nothing committable ever exists unprotected, even if init is interrupted. Your tracked
 `.gitignore` is never edited, so `git stash` or `git checkout` can't un-ignore the mailbox.
 
-Refuses before changing anything when `-RepoPath` is a cocopilot install: its own path, or any alias or copy whose
-`.mailbox/` holds the two `*.example.*` templates this script reads from. It also refuses when git tracks anything under
-`.mailbox/`, and when an existing `.mailbox/` holds anything cocopilot didn't create.
+Refuses before changing anything when `-RepoPath` is the cocopilot install running the script, by its own path or through
+an alias (junction, symlink, subst drive). The agents would otherwise edit the scripts they run the protocol with. It
+also refuses when git tracks anything under `.mailbox/`, and when an existing `.mailbox/` holds anything cocopilot
+didn't create.
+
+To work on cocopilot itself, pair on a separate worktree or clone. The install keeps running the protocol:
+
+```powershell
+git -C C:\path\to\cocopilot worktree add ..\cocopilot-dev
+Set-Location C:\path\to\cocopilot-dev
+cocopilot-start
+```
 
 | Parameter             | Default     | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | --------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -269,7 +279,7 @@ from — instead of separate OS windows; pass `-UseWindowsTerminal:$false` to fo
 | `-ContextRoot`                      | (none)                                                             | Workspace folder (e.g. a parent dir of many repos) granted as a **read-only search scope** via an extra `--add-dir` + banner note — cross-repo context without widening ownership or writes                                               |
 | `-AgentACommand` / `-AgentBCommand` | `copilot` on PATH, by full path                                    | Command per agent. An explicit value, such as a profile shortcut function, is launched as given                                                                                                                                           |
 | `-AgentAModel` / `-AgentBModel`     | picker (`claude-opus-5.5` / `gpt-6.1-sol` suggested)               | Model assigned to that fixed lane identity. Supplying one skips that role's model picker                                                                                                                                                  |
-| `-AgentAEffort` / `-AgentBEffort`   | picker: strongest supported; explicit model: CLI default           | `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`; the account-aware picker offers only levels supported by the selected model                                                                                             |
+| `-AgentAEffort` / `-AgentBEffort`   | picker: `medium` when supported; explicit model: CLI default       | `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`; the account-aware picker offers only levels supported by the selected model                                                                                             |
 | `-AgentAContext` / `-AgentBContext` | picker: `long_context` when supported; explicit model: CLI default | `default` · `long_context`; account-aware selection rejects a tier the model does not support                                                                                                                                             |
 | `-AgentAArgs` / `-AgentBArgs`       | not bound                                                          | Expert complete argument array before `-C/-n/-i`. Explicitly binding it suppresses all typed model settings and the picker for that role; pass `@()` when a profile function supplies its own flags                                       |
 | `-NameA` / `-NameB`                 | `cocopilot-agent-a/b`                                              | Session names, and each new window/tab's title. An explicit value always wins; otherwise derived from `-SessionName`                                                                                                                      |
@@ -374,7 +384,7 @@ The verifier's banner deliberately contains **no** mutating commands — a read-
 Deletes only the files cocopilot created in `.mailbox/`. The directory goes only when it is then empty; anything else
 stays and is reported. It also removes cocopilot's managed rule from `.git/info/exclude`, and the `.gitignore` block
 that older versions added. Your own rules and the file's encoding survive, CRLF or LF. Before changing anything, it
-refuses a cocopilot install (by path or templates), tracked content under `.mailbox/`, a linked `.mailbox/`, and any
+refuses the cocopilot install itself (by path or alias), tracked content under `.mailbox/`, a linked `.mailbox/`, and any
 `.mailbox/` that isn't a cocopilot mailbox (no valid ownership record or no cocopilot log marker). Supports `-WhatIf` /
 `-Confirm`.
 
@@ -387,8 +397,8 @@ With `-Recurse`, the walk never descends into a directory named `.git` or `node_
 point (symbolic link, junction, or mount point) — so a junction can't create a traversal cycle back up the tree or walk
 the search outside the requested root. A `.mailbox/` that is itself a reparse point is rejected the same way, in both
 `-Recurse` discovery and the single-target path — cocopilot never creates it that way, and `-Recurse` must never
-be pointed through a link to an arbitrary, externally-controlled target. A cocopilot install, found by path or by its
-templates, is reported as a discovery issue, never attempted as a target. A `.mailbox/` that isn't cocopilot's is
+be pointed through a link to an arbitrary, externally-controlled target. A `.mailbox/` in the cocopilot install itself,
+found by path or alias, is reported as a discovery issue, never attempted as a target. A `.mailbox/` that isn't cocopilot's is
 skipped and listed in the summary, never touched. A directory that can't be enumerated is recorded as a discovery issue
 rather than silently skipped. One target failing never stops the others — every discoverable target is attempted, a
 summary is printed, and the script throws only after every attempt has completed if anything (cleanup or discovery)
@@ -430,7 +440,7 @@ assets/
 profile/
   cocopilot.profile.ps1       the functions install.ps1 dot-sources into
                                your profile (cocopilot-start/-models/…)
-.mailbox/
+templates/
   implementer.example.json    tracked template — ownership record
   lane.example.md             tracked template — per-agent lane scratchpad
 prompts/
@@ -455,15 +465,15 @@ scripts/
   render-prompt.ps1           print a role prompt for manual paste
   cleanup-mailbox.ps1         remove cocopilot's footprint from a target
 tests/
-  Cocopilot.Tests.ps1         Pester 5 suite (225 tests, pwsh 7.4+)
+  Cocopilot.Tests.ps1         Pester 5 suite (226 tests, pwsh 7.4+)
 ```
 
-The real `.mailbox/` state is created **inside each target repo** (git-ignored there); cocopilot's own repo only tracks
-the two `*.example.*` templates.
+The real `.mailbox/` state is created **inside each target repo** (git-ignored there); cocopilot's own repo tracks only
+the two `*.example.*` templates under `templates/`, so a clone or worktree of cocopilot can be a pairing target too.
 
 ## Tests
 
-225 black-box Pester 5 tests cover init, git-local ignore rules (including non-ASCII paths under an OEM console code
+226 black-box Pester 5 tests cover init, git-local ignore rules (including non-ASCII paths under an OEM console code
 page), watcher wake/no-wake behavior, lossless log delivery
 (cursors, acknowledgement tokens, redelivery, labelled legacy and incomplete entries, multi-byte offsets), framed and
 exclusive log appends under concurrent writers and readers, whole-file replacement that concurrent readers never see
@@ -479,7 +489,7 @@ session-name/window-title helpers, Windows Terminal command-line quoting, the Po
 launch-argument passing, bounded launch commands with in-window prompt rendering, stock Copilot CLI resolution by path
 (never a profile function), npm-installed Copilot resolution, model catalog parsing and capability mapping, an account
 model query that is stopped when it does not finish, numbered
-model selection with the strongest-effort default, supported effort/context validation, independent Agent A/Agent B
+model selection with the `medium` effort default, supported effort/context validation, independent Agent A/Agent B
 argument generation, the profile/installer command surface (including empty profiles, the read-only verifier
 prompt, mistyped switches that every named command refuses, and `-WhatIf`/`-Confirm` passed through
 `cocopilot-cleanup`), and `Get-Help` for every user-facing script.
@@ -497,7 +507,7 @@ Run fail-closed from the repo root (copy/paste as-is):
 pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw "Pester 5 required" }; $c = New-PesterConfiguration; $c.Run.Path = "tests"; $c.Run.Exit = $true; Invoke-Pester -Configuration $c'
 ```
 
-For quick feedback while you work, run the fast subset. It runs the 116 tests without the `Slow` tag and skips the
+For quick feedback while you work, run the fast subset. It runs the 117 tests without the `Slow` tag and skips the
 other 109 tests. It never replaces the full run above, which stays the check before any commit.
 
 ```powershell

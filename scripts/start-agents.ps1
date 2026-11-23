@@ -161,7 +161,7 @@
     # assign to agent-a and agent-b
 
 .EXAMPLE
-    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentAModel claude-opus-5.5 -AgentAEffort max -AgentAContext long_context -AgentBModel gpt-6.1-sol -AgentBEffort max -AgentBContext long_context
+    .\scripts\start-agents.ps1 -RepoPath C:\Repos\some-other-project -AgentAModel claude-opus-5.5 -AgentAEffort medium -AgentAContext long_context -AgentBModel gpt-6.1-sol -AgentBEffort medium -AgentBContext long_context
     # non-interactive role assignment with explicit model settings
 
 .EXAMPLE

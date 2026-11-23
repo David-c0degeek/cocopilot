@@ -11,7 +11,7 @@
     cocopilot itself stays centrally installed (this script's own location);
     the mailbox it manages lives inside whatever repository (or, with
     -AllowNonGit, workspace root) you're pairing on. Templates are read
-    from this cocopilot install's own .mailbox/*.example.* files, but the
+    from this cocopilot install's own templates/*.example.* files, but the
     real, git-ignored files are written into <RepoPath>/.mailbox/, stamped
     with that repository's current git HEAD (or the fixed "non-git-root"
     sentinel, with -AllowNonGit). Safe to re-run: it will not overwrite
@@ -40,10 +40,10 @@
     committed even if init is interrupted mid-write. The tracked .gitignore
     of the target is never edited.
 
-    Refuses outright, before any of the above, when -RepoPath is a
-    cocopilot install - its own path, or any other path (junction, symlink,
-    subst, copy) to a directory whose .mailbox/ holds cocopilot's
-    *.example.* templates - when git tracks anything under .mailbox/, or
+    Refuses outright, before any of the above, when -RepoPath is the
+    cocopilot install running this script - its own path, or an alias
+    (junction, symlink, subst, mapped drive) to it - when git tracks
+    anything under .mailbox/, or
     when an existing .mailbox/ holds anything cocopilot does not create
     itself. A partially initialized cocopilot mailbox is completed on re-run.
 
@@ -111,28 +111,22 @@ $PSNativeCommandUseErrorActionPreference = $false
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
 $cocopilotRoot = Split-Path -Parent $PSScriptRoot
 
-# Refuse FIRST, before any side effect: cocopilot's own installed repo is
-# never a pairing target. Its .mailbox/ only ever holds the two tracked
-# *.example.* templates this script reads from below - initializing a real
-# mailbox there would collide with them, and cleanup-mailbox.ps1 would later
-# see tracked files under .mailbox/ and (correctly) refuse to touch them too.
-if ($RepoPath.TrimEnd('\', '/') -ieq $cocopilotRoot.TrimEnd('\', '/')) {
-    throw ("'$RepoPath' is cocopilot's own installed repo, not a project you're pairing on. " +
-        "cd into the project repo you want to pair on (or pass it as -RepoPath) and run this there instead.")
-}
-# The path check above misses aliases (junction, symlink, subst) and copies;
-# the templates themselves identify a cocopilot install whatever the path.
-if (Test-CocopilotTemplatesPresent -RepoPath $RepoPath) {
-    throw ("'$RepoPath' holds cocopilot's *.example.* templates under .mailbox/ - it is a cocopilot install " +
-        "(possibly reached through an alias path), not a project you're pairing on.")
+# Refuse FIRST, before any side effect: the running install is never a
+# pairing target, because the agents would edit the very scripts they run
+# the protocol with. To work on cocopilot itself, pair on a separate clone
+# or worktree of it.
+if (Test-IsCocopilotInstall -Path $RepoPath -CocopilotRoot $cocopilotRoot) {
+    throw ("'$RepoPath' is cocopilot's own installed repo (by path or alias), not a project you're pairing on. " +
+        "To work on cocopilot itself, pair on a separate worktree or clone, for example: " +
+        "git -C '$cocopilotRoot' worktree add ..\cocopilot-dev; then run this there.")
 }
 
 $mailboxDir = Join-Path $RepoPath ".mailbox"
 $implementerPath = Join-Path $mailboxDir "implementer.json"
 $lanePaths = @("agent-a.md", "agent-b.md") | ForEach-Object { Join-Path $mailboxDir $_ }
 $sessionLogPath = Join-Path $mailboxDir "session.log.md"
-$implementerTemplate = Join-Path $cocopilotRoot ".mailbox\implementer.example.json"
-$laneTemplate = Join-Path $cocopilotRoot ".mailbox\lane.example.md"
+$implementerTemplate = Join-Path $cocopilotRoot "templates\implementer.example.json"
+$laneTemplate = Join-Path $cocopilotRoot "templates\lane.example.md"
 
 $isGitRepo = Test-CocopilotGitRepository -Path $RepoPath
 

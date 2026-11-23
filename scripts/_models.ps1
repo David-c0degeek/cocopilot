@@ -286,10 +286,18 @@ function Invoke-CocopilotSdkModelQuery {
     $nodeScript = @'
 const [sdkUrl, cliPath] = process.argv.slice(2);
 const { CopilotClient, RuntimeConnection } = await import(sdkUrl);
-const client = new CopilotClient({
-  connection: RuntimeConnection.forStdio({ path: cliPath }),
-  logLevel: "error"
-});
+// CLI 1.0.114 renamed the SDK's connection options; older CLIs keep the old names.
+const options = typeof RuntimeConnection.forSpawnedStdio === "function"
+  ? {
+      mode: "coding-agent",
+      runtime: RuntimeConnection.forSpawnedStdio({ path: cliPath }),
+      observability: { logLevel: "error" }
+    }
+  : {
+      connection: RuntimeConnection.forStdio({ path: cliPath }),
+      logLevel: "error"
+    };
+const client = new CopilotClient(options);
 
 try {
   await client.start();
@@ -371,7 +379,7 @@ function ConvertFrom-CocopilotCompletionModels {
 
     $match = [regex]::Match(
         $CompletionText,
-        "(?s)--model\)\s+.*?compgen\s+-W\s+'(?<models>[^']+)'"
+        "(?s)--model\)\s+.*?compgen\s+-W\s+(?<quote>['`"])(?<models>[^'`"]+)\k<quote>"
     )
     if (-not $match.Success) {
         throw "Could not find the --model choices in Copilot's bash completion output."
@@ -528,25 +536,6 @@ function Read-CocopilotOptionalSetting {
     }
 }
 
-function Get-CocopilotStrongestEffort {
-    <#
-    .SYNOPSIS
-        The strongest known effort among a model's supported values, by the
-        fixed ranking max > xhigh > high > medium > low > minimal > none -
-        independent of the SDK's array order and its default. Values outside
-        the ranking are returned separately, so a caller can show them rather
-        than guess where they rank.
-    #>
-    param([string[]]$SupportedEfforts)
-
-    $ranking = @("max", "xhigh", "high", "medium", "low", "minimal", "none")
-    $supported = @($SupportedEfforts | Where-Object { $_ })
-    return [pscustomobject]@{
-        Strongest = $ranking | Where-Object { $_ -in $supported } | Select-Object -First 1
-        Unknown   = @($supported | Where-Object { $_ -notin $ranking })
-    }
-}
-
 function Resolve-CocopilotAgentModelConfiguration {
     param(
         [Parameter(Mandatory)]$Model,
@@ -574,12 +563,9 @@ function Resolve-CocopilotAgentModelConfiguration {
     if ($PromptForSettings -and -not $isAuto) {
         if (-not $effort) {
             if ($Model.HasCapabilityMetadata -and $supportedEfforts.Count -gt 0) {
-                $ranked = Get-CocopilotStrongestEffort -SupportedEfforts $supportedEfforts
-                if ($ranked.Unknown.Count -gt 0) {
-                    $defaultNote = if ($ranked.Strongest) { "the default is the strongest known value, '$($ranked.Strongest)'" } else { "no default is preselected" }
-                    Write-Warning "$($RoleLabel): model '$($Model.Id)' also advertises effort values cocopilot cannot rank ($($ranked.Unknown -join ', ')); $defaultNote."
-                }
-                $effort = Read-CocopilotOptionalSetting -Prompt "$RoleLabel effort" -Choices $supportedEfforts -DefaultValue $ranked.Strongest
+                # Without medium there is no preselection, so the Copilot CLI's model default applies.
+                $defaultEffort = if ("medium" -in $supportedEfforts) { "medium" } else { $null }
+                $effort = Read-CocopilotOptionalSetting -Prompt "$RoleLabel effort" -Choices $supportedEfforts -DefaultValue $defaultEffort
             } elseif (-not $Model.HasCapabilityMetadata) {
                 $effort = Read-CocopilotOptionalSetting -Prompt "$RoleLabel effort" `
                     -Choices @("none", "minimal", "low", "medium", "high", "xhigh", "max")
