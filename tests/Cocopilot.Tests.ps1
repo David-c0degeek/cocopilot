@@ -2734,7 +2734,7 @@ Describe "install.ps1 + profile snippet" {
 
     It "writes a marker-guarded dot-source block into a fresh profile" {
         $p = Join-Path $TestDrive "profiles\fresh-profile.ps1"
-        & $script:installScript -ProfilePath $p -SkipUpdate *>$null
+        & $script:installScript -ProfilePath $p -SkipUpdate -SkipSkillRegistration *>$null
         $raw = Get-Content -Raw $p
         $raw | Should -Match ([regex]::Escape("# >>> cocopilot >>>"))
         $raw | Should -Match ([regex]::Escape($script:snippetPath))
@@ -2744,8 +2744,8 @@ Describe "install.ps1 + profile snippet" {
     It "is idempotent: rerunning replaces the block instead of duplicating it" {
         $p = Join-Path $TestDrive "profiles\idem-profile.ps1"
         [System.IO.File]::WriteAllText($p, "# user content before`n", $script:utf8NoBom)
-        & $script:installScript -ProfilePath $p -SkipUpdate *>$null
-        & $script:installScript -ProfilePath $p -SkipUpdate *>$null
+        & $script:installScript -ProfilePath $p -SkipUpdate -SkipSkillRegistration *>$null
+        & $script:installScript -ProfilePath $p -SkipUpdate -SkipSkillRegistration *>$null
         $raw = Get-Content -Raw $p
         ([regex]::Matches($raw, [regex]::Escape("# >>> cocopilot >>>"))).Count | Should -Be 1
         $raw | Should -Match "user content before"
@@ -2754,7 +2754,7 @@ Describe "install.ps1 + profile snippet" {
     It "registers the block in an existing empty profile" {
         $p = Join-Path $TestDrive "profiles\empty-profile.ps1"
         New-Item -ItemType File -Force -Path $p | Out-Null
-        & $script:installScript -ProfilePath $p -SkipUpdate *>$null
+        & $script:installScript -ProfilePath $p -SkipUpdate -SkipSkillRegistration *>$null
         $raw = Get-Content -Raw $p
         $raw | Should -Match ([regex]::Escape("# >>> cocopilot >>>"))
         $raw | Should -Match "^# >>> cocopilot >>>"
@@ -2767,7 +2767,7 @@ Describe "install.ps1 + profile snippet" {
         Copy-Item -LiteralPath $script:installScript -Destination (Join-Path $install "install.ps1")
         $p = Join-Path $TestDrive "profiles\zip-profile.ps1"
         $PSNativeCommandUseErrorActionPreference = $true
-        & (Join-Path $install "install.ps1") -ProfilePath $p *>$null
+        & (Join-Path $install "install.ps1") -ProfilePath $p -SkipSkillRegistration *>$null
         (Get-Content -Raw $p) | Should -Match ([regex]::Escape((Join-Path $install "profile\cocopilot.profile.ps1")))
     }
 
@@ -2867,6 +2867,252 @@ Describe "install.ps1 + profile snippet" {
         & (Join-Path $PSHOME "pwsh.exe") -NoProfile -NonInteractive -Command $command *>$null
         $LASTEXITCODE | Should -Be 0
         Test-Path -LiteralPath (Get-TestMailboxDir $t) | Should -BeFalse
+    }
+}
+
+Describe "install.ps1 skill registration" {
+    BeforeAll {
+        $script:installScript = Join-Path $script:repoRoot "install.ps1"
+        $script:expectedSkillsDir = Join-Path $script:repoRoot ".github\skills"
+        # A stock CLI on PATH that records every call's argv as one JSON line
+        # and answers like the real one. FAKE_SKILL_MODE picks the answer to
+        # `config skillDirectories` (list, unset, config-error), whether
+        # `skill add` fails (add-fail) and whether `skill list` fails
+        # (list-fail); FAKE_SKILL_LIST is the raw `skill list --json` output.
+        $script:skillBin = Join-Path $TestDrive "skill-stock-bin"
+        $script:emptyBin = Join-Path $TestDrive "skill-empty-bin"
+        New-Item -ItemType Directory -Force -Path $script:skillBin, $script:emptyBin | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $script:skillBin "copilot.ps1"), (@(
+                    '$ErrorActionPreference = "Continue"',
+                    '[System.IO.File]::AppendAllText($env:FAKE_COPILOT_LOG, (ConvertTo-Json -Compress -InputObject @($args)) + "`n")',
+                    'if ($args[0] -eq "config" -and $args[1] -eq "skillDirectories") {',
+                    '    switch ($env:FAKE_SKILL_MODE) {',
+                    '        "unset" { exit 1 }',
+                    '        "config-error" { Write-Error "Error: settings file is not valid JSON"; exit 1 }',
+                    '        default { $env:FAKE_SKILL_DIRS -split "\|"; exit 0 }',
+                    '    }',
+                    '}',
+                    'if ($args[0] -eq "skill" -and $args[1] -eq "add" -and $env:FAKE_SKILL_MODE -eq "add-fail") { Write-Error "Error: cannot add"; exit 2 }',
+                    'if ($args[0] -eq "skill" -and $args[1] -eq "list") {',
+                    '    if ($env:FAKE_SKILL_MODE -eq "list-fail") { Write-Error "Error: cannot read skills"; exit 3 }',
+                    '    if ($env:FAKE_SKILL_LIST) { $env:FAKE_SKILL_LIST } else { "[]" }; exit 0',
+                    '}',
+                    'exit 0') -join "`n"), $script:utf8NoBom)
+
+        function New-InstallCopy {
+            # A disposable install outside the checkout, with or without the
+            # bundled skill.
+            param([Parameter(Mandatory)][string]$Name, [string]$Parent = $TestDrive, [switch]$WithSkill)
+            $install = Join-Path $Parent $Name
+            New-Item -ItemType Directory -Force -Path (Join-Path $install "profile"), (Join-Path $install ".github\skills") | Out-Null
+            Copy-Item -LiteralPath $script:installScript -Destination (Join-Path $install "install.ps1")
+            Copy-Item -LiteralPath (Join-Path $script:repoRoot "profile\cocopilot.profile.ps1") -Destination (Join-Path $install "profile")
+            Copy-Item -LiteralPath $script:scriptsDir -Destination (Join-Path $install "scripts") -Recurse
+            if ($WithSkill) {
+                Copy-Item -LiteralPath (Join-Path $script:expectedSkillsDir "cocopilot-agent-prompt") -Destination (Join-Path $install ".github\skills") -Recurse
+            }
+            return $install
+        }
+
+        function Get-ConstantLiteral {
+            # Parses $Text without running it and returns the value of a
+            # single-quoted constant: the whole expression, or the command
+            # element at -CommandElement. Anything else fails the test.
+            param([Parameter(Mandatory)][string]$Text, [int]$CommandElement = -1)
+            $tokens = $errors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$errors)
+            @($errors).Count | Should -Be 0
+            $element = $ast.EndBlock.Statements[0].PipelineElements[0]
+            $literal = if ($CommandElement -ge 0) { $element.CommandElements[$CommandElement] } else { $element.Expression }
+            $literal | Should -BeOfType ([System.Management.Automation.Language.StringConstantExpressionAst])
+            $literal.StringConstantType | Should -Be ([System.Management.Automation.Language.StringConstantType]::SingleQuoted)
+            return $literal.Value
+        }
+
+        function Invoke-SkillInstall {
+            # Runs the installer against this checkout with the fake CLI (or
+            # no CLI) on PATH and a Copilot home under TestDrive. Returns the
+            # recorded CLI calls and the warnings.
+            param(
+                [Parameter(Mandatory)][string]$Name,
+                [string]$Mode = "list",
+                [string[]]$RegisteredDirs = @(),
+                [string]$SkillList,
+                [switch]$NoCli,
+                [string]$InstallScript = $script:installScript
+            )
+            $log = Join-Path $TestDrive "$Name-calls.log"
+            $saved = @{ PATH = $env:PATH; COPILOT_HOME = $env:COPILOT_HOME }
+            try {
+                $env:PATH = if ($NoCli) { $script:emptyBin } else { $script:skillBin }
+                $env:COPILOT_HOME = Join-Path $TestDrive "$Name-copilot-home"
+                $env:FAKE_COPILOT_LOG = $log
+                $env:FAKE_SKILL_MODE = $Mode
+                $env:FAKE_SKILL_DIRS = $RegisteredDirs -join "|"
+                $env:FAKE_SKILL_LIST = $SkillList
+                $output = @(& $InstallScript -ProfilePath (Join-Path $TestDrive "profiles\$Name.ps1") -SkipUpdate 3>&1 6>&1)
+            } finally {
+                $env:PATH = $saved.PATH
+                if ($null -eq $saved.COPILOT_HOME) { Remove-Item Env:\COPILOT_HOME -ErrorAction SilentlyContinue } else { $env:COPILOT_HOME = $saved.COPILOT_HOME }
+                foreach ($variable in "FAKE_COPILOT_LOG", "FAKE_SKILL_MODE", "FAKE_SKILL_DIRS", "FAKE_SKILL_LIST") {
+                    Remove-Item "Env:\$variable" -ErrorAction SilentlyContinue
+                }
+            }
+            $calls = if (Test-Path -LiteralPath $log) {
+                @(Get-Content -LiteralPath $log | ForEach-Object { , @(ConvertFrom-Json -InputObject $_) })
+            } else { @() }
+            return [pscustomobject]@{
+                Calls    = $calls
+                AddCalls = @($calls | Where-Object { $_[0] -eq "skill" -and $_[1] -eq "add" })
+                Warnings = @($output | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+                Host     = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { [string]$_.MessageData })
+            }
+        }
+    }
+
+    It "adds the bundled skill directory with exactly 'skill add' and the install's .github\skills when it is absent" {
+        $result = Invoke-SkillInstall -Name "skill-absent" -RegisteredDirs @("C:\elsewhere\skills")
+        $result.AddCalls.Count | Should -Be 1
+        $result.AddCalls[0] | Should -Be @("skill", "add", $script:expectedSkillsDir)
+        @($result.Calls | Where-Object { $_[0] -eq "config" -and $_.Count -ne 2 }).Count | Should -Be 0 -Because "settings are only read"
+        $result.Warnings | Should -BeNullOrEmpty
+    }
+
+    It "adds nothing when the directory is already registered as '<Form>'" -ForEach @(
+        @{ Form = "exact" }, @{ Form = "different case" }, @{ Form = "trailing backslash" }
+    ) {
+        $registered = switch ($Form) {
+            "exact" { $script:expectedSkillsDir }
+            "different case" { $script:expectedSkillsDir.ToUpperInvariant() }
+            "trailing backslash" { "$script:expectedSkillsDir\" }
+        }
+        $result = Invoke-SkillInstall -Name ("skill-present-" + ($Form -replace ' ', '-')) -RegisteredDirs @("C:\elsewhere\skills", $registered)
+        $result.AddCalls.Count | Should -Be 0
+        $result.Warnings | Should -BeNullOrEmpty
+    }
+
+    It "treats an unset skillDirectories (exit 1, no output) as absent and adds the directory" {
+        $result = Invoke-SkillInstall -Name "skill-unset" -Mode "unset"
+        $result.AddCalls.Count | Should -Be 1
+        $result.AddCalls[0] | Should -Be @("skill", "add", $script:expectedSkillsDir)
+    }
+
+    It "warns and adds nothing when skillDirectories cannot be read, and still installs" {
+        $profilePath = Join-Path $TestDrive "profiles\skill-config-error.ps1"
+        $result = Invoke-SkillInstall -Name "skill-config-error" -Mode "config-error"
+        $result.AddCalls.Count | Should -Be 0
+        $result.Warnings | Should -HaveCount 1
+        $result.Warnings[0] | Should -BeLike "cocopilot is installed, but the skill cocopilot-agent-prompt was NOT registered: *not valid JSON*Register it with: copilot skill add '$script:expectedSkillsDir'"
+        Get-Content -Raw $profilePath | Should -Match ([regex]::Escape("# >>> cocopilot >>>"))
+    }
+
+    It "warns and still installs when no Copilot CLI is on PATH" {
+        $profilePath = Join-Path $TestDrive "profiles\skill-no-cli.ps1"
+        $result = Invoke-SkillInstall -Name "skill-no-cli" -NoCli
+        $result.Calls.Count | Should -Be 0
+        $result.Warnings | Should -HaveCount 1
+        $result.Warnings[0] | Should -BeLike "*NOT registered: The GitHub Copilot CLI ('copilot') was not found on PATH*Register it with: copilot skill add*"
+        Get-Content -Raw $profilePath | Should -Match ([regex]::Escape("# >>> cocopilot >>>"))
+    }
+
+    It "warns when 'copilot skill add' fails" {
+        $result = Invoke-SkillInstall -Name "skill-add-fail" -Mode "add-fail"
+        $result.AddCalls.Count | Should -Be 1
+        $result.Warnings | Should -HaveCount 1
+        $result.Warnings[0] | Should -BeLike "*NOT registered:*skill add' failed (exit 2)*cannot add*Register it with:*"
+    }
+
+    It "names another skill of the same name without removing it, and ignores the bundled one" {
+        $bundled = Join-Path $script:expectedSkillsDir "cocopilot-agent-prompt"
+        $list = ConvertTo-Json -Compress -InputObject @(
+            [pscustomobject]@{ name = "cocopilot-agent-prompt"; source = "custom"; path = $bundled; enabled = $true }
+            [pscustomobject]@{ name = "cocopilot-agent-prompt"; source = "personal"; path = "C:\personal\skills\cocopilot-agent-prompt"; enabled = $true }
+        )
+        $result = Invoke-SkillInstall -Name "skill-duplicate" -SkillList $list
+        $result.Warnings | Should -HaveCount 1
+        $result.Warnings[0] | Should -BeLike "*'C:\personal\skills\cocopilot-agent-prompt' (source 'personal')*your decision*"
+        $result.Warnings[0] | Should -Not -BeLike "*skill remove*" -Because "removing the parent folder would unregister a whole collection"
+        @($result.Calls | Where-Object { $_[1] -in @("remove", "disable", "enable") }).Count | Should -Be 0
+    }
+
+    It "reports the registration and warns when the duplicate check fails (<Case>)" -ForEach @(
+        @{ Case = "list fails"; Mode = "list-fail"; SkillList = $null; Expected = "*exit 3*cannot read skills*" }
+        @{ Case = "invalid JSON"; Mode = "list"; SkillList = "not json"; Expected = "*did not return valid JSON*" }
+    ) {
+        $result = Invoke-SkillInstall -Name ("skill-list-" + ($Case -replace ' ', '-')) -Mode $Mode -SkillList $SkillList
+        $result.AddCalls.Count | Should -Be 1
+        $result.Host | Should -Contain "Registered the skill directory $script:expectedSkillsDir with the Copilot CLI (cocopilot-agent-prompt)."
+        $result.Warnings | Should -HaveCount 1
+        $result.Warnings[0] | Should -BeLike "The skill cocopilot-agent-prompt is registered, but the duplicate check could not complete: $Expected"
+    }
+
+    It "calls a checkout without the bundled SKILL.md incomplete and suggests no 'skill add'" {
+        $install = New-InstallCopy -Name "incomplete-install"
+        $result = Invoke-SkillInstall -Name "skill-incomplete" -InstallScript (Join-Path $install "install.ps1")
+        $result.Calls.Count | Should -Be 0
+        $result.Warnings | Should -HaveCount 1
+        $result.Warnings[0] | Should -BeLike "*NOT registered: the checkout*is incomplete*SKILL.md is missing*pull --ff-only*clone it again*Then rerun: & '*install.ps1'"
+        $result.Warnings[0] | Should -Not -BeLike "*skill add*"
+        $result.Warnings[0] | Should -Not -BeLike "*cocopilot-update*" -Because "the profile functions may not be loaded"
+    }
+
+    It "quotes every path in its manual commands as a constant single-quoted literal (`$ and ' in the path)" {
+        $parent = Join-Path $TestDrive "coco`$demo it's"
+        $incomplete = New-InstallCopy -Name "incomplete" -Parent $parent
+        $complete = New-InstallCopy -Name "complete" -Parent $parent -WithSkill
+        $missing = (Invoke-SkillInstall -Name "skill-quote-missing" -InstallScript (Join-Path $incomplete "install.ps1")).Warnings
+        $failed = (Invoke-SkillInstall -Name "skill-quote-add-fail" -Mode "add-fail" -InstallScript (Join-Path $complete "install.ps1")).Warnings
+        $missing | Should -HaveCount 1
+        $failed | Should -HaveCount 1
+
+        $installLiteral = "'" + $incomplete.Replace("'", "''") + "'"
+        $missing[0] | Should -BeLike "*git -C $installLiteral status*git -C $installLiteral pull --ff-only*"
+        $gitLiteral = [regex]::Match($missing[0], "git -C ('(?:[^']|'')*') status").Groups[1].Value
+        Get-ConstantLiteral -Text $gitLiteral | Should -Be $incomplete
+
+        $rerun = [regex]::Match($missing[0], "Then rerun: (.+)$").Groups[1].Value
+        $rerun | Should -Be ("& '" + (Join-Path $incomplete "install.ps1").Replace("'", "''") + "'")
+        Get-ConstantLiteral -Text $rerun -CommandElement 0 | Should -Be (Join-Path $incomplete "install.ps1")
+
+        $skillsDir = Join-Path $complete ".github\skills"
+        $add = [regex]::Match($failed[0], "Register it with: (.+)$").Groups[1].Value
+        $add | Should -Be ("copilot skill add '" + $skillsDir.Replace("'", "''") + "'")
+        Get-ConstantLiteral -Text $add -CommandElement 3 | Should -Be $skillsDir
+    }
+
+    It "forwards -SkipSkillRegistration:<Skip> from the piped bootstrap to the cloned installer" -Tag Slow -ForEach @(
+        @{ Skip = $true }, @{ Skip = $false }
+    ) {
+        # The bootstrap runs without a script location and hands off to
+        # $HOME\cocopilot\install.ps1; here a stub that records its switches.
+        $bootHome = Join-Path $TestDrive "bootstrap-home-$Skip"
+        $clone = Join-Path $bootHome "cocopilot"
+        New-Item -ItemType Directory -Force -Path (Join-Path $clone ".git") | Out-Null
+        $record = Join-Path $TestDrive "bootstrap-$Skip.json"
+        [System.IO.File]::WriteAllText((Join-Path $clone "install.ps1"), (@(
+                    'param([string]$InstallDir, [string]$ProfilePath, [switch]$SkipUpdate, [switch]$SkipSkillRegistration)',
+                    "[System.IO.File]::WriteAllText($(ConvertTo-SingleQuoted $record), (ConvertTo-Json @{ InstallDir = `$InstallDir; SkipUpdate = [bool]`$SkipUpdate; SkipSkillRegistration = [bool]`$SkipSkillRegistration }))"
+                ) -join "`n"), $script:utf8NoBom)
+        # A TestDrive profile, an empty PATH and a TestDrive Copilot home keep
+        # even a failed hand-off away from the real profile and CLI settings.
+        $command = "& ([scriptblock]::Create([System.IO.File]::ReadAllText($(ConvertTo-SingleQuoted $script:installScript)))) " +
+            "-ProfilePath $(ConvertTo-SingleQuoted (Join-Path $TestDrive "profiles\bootstrap-$Skip.ps1")) -SkipUpdate -SkipSkillRegistration:`$$Skip"
+        $saved = @{ USERPROFILE = $env:USERPROFILE; PATH = $env:PATH; COPILOT_HOME = $env:COPILOT_HOME }
+        try {
+            $env:USERPROFILE = $bootHome
+            $env:PATH = $script:emptyBin
+            $env:COPILOT_HOME = Join-Path $TestDrive "bootstrap-copilot-home"
+            & (Join-Path $PSHOME "pwsh.exe") -NoProfile -NonInteractive -Command $command *>$null
+        } finally {
+            $env:USERPROFILE = $saved.USERPROFILE
+            $env:PATH = $saved.PATH
+            if ($null -eq $saved.COPILOT_HOME) { Remove-Item Env:\COPILOT_HOME -ErrorAction SilentlyContinue } else { $env:COPILOT_HOME = $saved.COPILOT_HOME }
+        }
+        $LASTEXITCODE | Should -Be 0
+        $forwarded = Get-Content -Raw $record | ConvertFrom-Json
+        $forwarded.InstallDir | Should -Be $clone
+        $forwarded.SkipUpdate | Should -BeTrue
+        $forwarded.SkipSkillRegistration | Should -Be $Skip
     }
 }
 

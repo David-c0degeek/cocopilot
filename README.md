@@ -43,14 +43,40 @@ dot-sources [`profile/cocopilot.profile.ps1`](profile/cocopilot.profile.ps1) —
 updates need no profile edits. Run it from pwsh 7.4 or later. It refuses Windows PowerShell. If an earlier version
 registered cocopilot in your Windows PowerShell profile, delete that `# >>> cocopilot >>>` block by hand. You get:
 
-| Function                                                                                        | Does                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cocopilot-start [-RepoPath] [-Name] [-AgentAModel] [-AgentBModel] [-Transport] […]`            | Inits the mailbox, lets you assign a model/settings to each role when omitted, and opens both named agent tabs. Defaults to the current directory. `-Transport direct` wakes the agents with native peer messages instead of polling.                                                                                                                                                                                     |
-| `cocopilot-models [-Raw] [-NoFallback]`                                                         | Shows the models available to your Copilot account plus supported effort/context settings and token limits.                                                                                                                                                                                                                                                                                                               |
-| `cocopilot-prompt -Agent a\|b\|verifier [-RepoPath] [-ContextRoot] [-AllowNonGit] [-Transport]` | Copies that role's paste-ready (re)start prompt to the clipboard — for crashed windows, manual role adds, or a fresh verifier session. In a direct-transport pair, restart a crashed agent with `copilot --resume <its id>` instead. Start such a window with `--add-dir <pair dir>` (the banner's `Mailbox:` path). Roles `a` and `b` init a missing mailbox; `verifier` never does and needs a pinned `VERIFY_REQUEST`. |
-| `cocopilot-cleanup [-RepoPath] [-Recurse] [-List] [-PairId] [-WhatIf] [-Confirm]`               | Removes the target's mailbox (and a legacy in-repo `.mailbox\` with its ignore rule) when you're done. `-Recurse` cleans every pair under `-RepoPath`. `-List` shows every pair read-only; `-PairId` cleans one whose folder moved or is gone. `-WhatIf` previews; `-Confirm` asks before each removal.                                                                                                                   |
-| `cocopilot-update`                                                                              | `git pull` + re-register (reruns the installer).                                                                                                                                                                                                                                                                                                                                                                          |
-| `copilot-opus` / `copilot-sol` / `copilot-terra`                                                | Plain `copilot` launchers with cocopilot's default model/flags.                                                                                                                                                                                                                                                                                                                                                           |
+| Function                                                                                        | Does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cocopilot-start [-RepoPath] [-Name] [-AgentAModel] [-AgentBModel] [-Transport] […]`            | Inits the mailbox, lets you assign a model/settings to each role when omitted, and opens both named agent tabs. Defaults to the current directory. `-Transport direct` wakes the agents with native peer messages instead of polling.                                                                                                                                                                                                                                                                                  |
+| `cocopilot-models [-Raw] [-NoFallback]`                                                         | Shows the models available to your Copilot account plus supported effort/context settings and token limits.                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `cocopilot-prompt -Agent a\|b\|verifier [-RepoPath] [-ContextRoot] [-AllowNonGit] [-Transport]` | Copies that role's paste-ready (re)start prompt to the clipboard — for crashed windows, manual role adds, or a fresh verifier session. In a direct-transport pair, restart a crashed agent with `copilot --resume <its id>` instead. Start such a window with `--add-dir <pair dir>` (the banner's `Mailbox:` path). Roles `a` and `b` init a missing mailbox; `verifier` never does and needs a pinned `VERIFY_REQUEST`. The bundled `cocopilot-agent-prompt` skill is the conversational equivalent for `a` and `b`. |
+| `cocopilot-cleanup [-RepoPath] [-Recurse] [-List] [-PairId] [-WhatIf] [-Confirm]`               | Removes the target's mailbox (and a legacy in-repo `.mailbox\` with its ignore rule) when you're done. `-Recurse` cleans every pair under `-RepoPath`. `-List` shows every pair read-only; `-PairId` cleans one whose folder moved or is gone. `-WhatIf` previews; `-Confirm` asks before each removal.                                                                                                                                                                                                                |
+| `cocopilot-update`                                                                              | `git pull` + re-register (reruns the installer).                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `copilot-opus` / `copilot-sol` / `copilot-terra`                                                | Plain `copilot` launchers with cocopilot's default model/flags.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+
+The installer also registers the bundled Copilot skill `cocopilot-agent-prompt`
+([`.github/skills/cocopilot-agent-prompt/SKILL.md`](.github/skills/cocopilot-agent-prompt/SKILL.md)).
+Ask any Copilot session to restart or reconnect a crashed agent-a or agent-b window, and the skill gives the `copilot --resume`
+command of a direct pair or the paste-ready prompt of a mailbox pair.
+
+| Step                                                        | What the installer does                                                                                                                     |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Find the stock CLI                                          | Uses the first native `copilot` executable or script on PATH, like the launcher, never a function.                                          |
+| Read `copilot config skillDirectories`                      | Compares each entry with `<install>\.github\skills`, ignoring letter case, trailing `\` and aliases.                                        |
+| Directory already listed                                    | Prints "already registered" and adds nothing.                                                                                               |
+| Directory not listed, or the setting is unset               | Runs `copilot skill add '<install>\.github\skills'`.                                                                                        |
+| CLI missing, settings unreadable, or `skill add` fails      | Warns that the skill was NOT registered, shows the `copilot skill add` command with the path single-quoted, and still succeeds.             |
+| Bundled `SKILL.md` missing                                  | Warns that the checkout is incomplete: repair or update it (`git -C '<install>' pull --ff-only`, or clone again), then rerun `install.ps1`. |
+| Another skill named `cocopilot-agent-prompt` already exists | Warns with that skill's folder and source. Removing it is your decision; the installer never removes, disables or enables a skill.          |
+| `copilot skill list --json` fails or returns no valid JSON  | Reports the registration, and warns that the duplicate check could not complete.                                                            |
+
+Skip this step with `install.ps1 -SkipSkillRegistration`.
+To unregister the skill, pass the absolute directory, never the bare skill name:
+
+```powershell
+copilot skill remove 'D:\repos\cocopilot\.github\skills'
+```
+
+`copilot skill remove cocopilot-agent-prompt` removes a skill by name: a personal skill of that name, or, when run inside the
+cocopilot clone, the bundled `SKILL.md` itself.
 
 ## Quick start
 
@@ -550,8 +576,12 @@ Full text: [`COLLABORATION.md`](COLLABORATION.md) — the binding agreement both
 ```
 README.md                     you are here
 COLLABORATION.md              the operating agreement both agents follow
-install.ps1                   one-line install/update + profile registration
+install.ps1                   one-line install/update + profile and skill registration
 .gitignore                    keeps generated state out of this repo
+.github/
+  skills/
+    cocopilot-agent-prompt/
+      SKILL.md                restart command or prompt for a crashed agent window
 assets/
   cocopilot.png               the logo
 profile/
@@ -587,7 +617,7 @@ scripts/
   render-prompt.ps1           print a role prompt for manual paste
   cleanup-mailbox.ps1         remove cocopilot's footprint from a target
 tests/
-  Cocopilot.Tests.ps1         Pester 5 suite (356 tests, pwsh 7.4+)
+  Cocopilot.Tests.ps1         Pester 5 suite (371 tests, pwsh 7.4+)
 ```
 
 The real mailbox state lives in the pair directories under the state root, never inside a target repo; cocopilot's own
@@ -596,7 +626,7 @@ pairing target too.
 
 ## Tests
 
-356 black-box Pester 5 tests cover init, the external mailbox store (canonical paths and pair ids through
+371 black-box Pester 5 tests cover init, the external mailbox store (canonical paths and pair ids through
 junctions and letter case, state root checks, refusals of linked, foreign or unproven pair directories, and the
 byte-for-byte `-MigrateLegacy` move of an in-repo mailbox, including resumed runs), legacy git-local ignore rules
 (including non-ASCII paths under an OEM console code page), watcher wake/no-wake behavior, lossless log delivery
@@ -620,7 +650,10 @@ model query that is stopped when it does not finish, numbered
 model selection with the `medium` effort default, supported effort/context validation, independent Agent A/Agent B
 argument generation, the profile/installer command surface (including empty profiles, the read-only verifier
 prompt, mistyped switches that every named command refuses, and `-WhatIf`/`-Confirm` passed through
-`cocopilot-cleanup`), and `Get-Help` for every user-facing script.
+`cocopilot-cleanup`), the installer's skill registration (a fake Copilot CLI on PATH: add once, case- and
+separator-insensitive detection, unset versus unreadable settings, a missing CLI, a failed add, single-quoted manual
+commands, an incomplete bundle, a same-name skill elsewhere, a failed duplicate check, and `-SkipSkillRegistration`
+through the piped bootstrap), and `Get-Help` for every user-facing script.
 
 **Prerequisite:** Pester 5 for pwsh. pwsh can also see the inbox Pester 3.4 from Windows PowerShell, which is too old:
 
@@ -636,8 +669,8 @@ folder. Run fail-closed from the repo root (copy/paste as-is):
 pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw "Pester 5 required" }; $c = New-PesterConfiguration; $c.Run.Path = "tests"; $c.Run.Exit = $true; Invoke-Pester -Configuration $c'
 ```
 
-For quick feedback while you work, run the fast subset. It runs the 204 tests without the `Slow` tag and skips the
-other 152 tests. It never replaces the full run above, which stays the check before any commit.
+For quick feedback while you work, run the fast subset. It runs the 217 tests without the `Slow` tag and skips the
+other 154 tests. It never replaces the full run above, which stays the check before any commit.
 
 ```powershell
 # the full-run command plus one filter line
