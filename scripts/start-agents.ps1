@@ -10,8 +10,8 @@
     cocopilot itself (this script, COLLABORATION.md, prompts/) stays
     centrally installed wherever you cloned it. -RepoPath is the repository
     you actually want to pair on — it can be anywhere, unrelated to
-    cocopilot's own location. Only the mailbox (.mailbox/) is created inside
-    that target repository.
+    cocopilot's own location. Nothing is created inside that target: its
+    mailbox lives in a pair directory outside it (see init-mailbox.ps1).
 
     By default each agent is launched through the full path of the first
     `copilot` native executable or PowerShell script on PATH — never a
@@ -54,7 +54,7 @@
     so the prompts themselves never need to hardcode a repo name or path.
 
     Agent A starts as the active implementer/driver (per
-    <RepoPath>/.mailbox, see init-mailbox.ps1). Agent B starts as the
+    the mailbox's implementer.json, see init-mailbox.ps1). Agent B starts as the
     navigator: it reads COLLABORATION.md and the mailbox, thinks along in
     its own lane (huddle challenges, syncs acks, rubber-duck answers), and
     only writes repository files after accepting a HANDOFF_OFFER.
@@ -160,13 +160,13 @@
     default) keeps today's behaviour: each agent runs watch-mailbox.ps1 in
     the background, which polls the mailbox. "direct" wakes the peer with
     Copilot's native send_session_message tool instead, so no agent polls.
-    Both use the same .mailbox/ as the only source of truth.
+    Both use the same mailbox directory as the only source of truth.
 
     Direct needs the user-level setting sessionManagementTools.enabled on
     (and .message not off, .scope not in-process); the launcher checks it
     with the stock CLI before anything else and stops with the fix command
     otherwise. It gives each agent a fresh session id with --session-id and
-    registers both in .mailbox/sessions.json before either window opens, so
+    registers both in the mailbox's sessions.json before either window opens, so
     -AgentAArgs/-AgentBArgs may not select a session themselves
     (--session-id, --resume, -r, --continue, --connect). It also adds
     --max-autopilot-continues 0 (unless the arguments already set it): a
@@ -258,8 +258,9 @@ $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
 if ($ContextRoot) { $ContextRoot = (Resolve-Path -LiteralPath $ContextRoot).Path }
 $cocopilotRoot = Split-Path -Parent $PSScriptRoot
 $initMailboxScript = Join-Path $PSScriptRoot "init-mailbox.ps1"
+$mailboxDir = Open-CocopilotMailbox -RepoPath $RepoPath
 $mailboxFiles = @("implementer.json", "agent-a.md", "agent-b.md", "session.log.md") |
-    ForEach-Object { Join-Path $RepoPath ".mailbox\$_" }
+    ForEach-Object { Join-Path $mailboxDir $_ }
 
 if (@($mailboxFiles | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0) {
     $initCommand = Get-CocopilotInitCommand -RepoPath $RepoPath -InitScript $initMailboxScript
@@ -270,11 +271,11 @@ if (@($mailboxFiles | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -
 # the human can decide that the history so far is handled, so the launcher
 # warns and never creates a cursor itself.
 $agentsWithoutCursor = @(@("agent-a", "agent-b") | Where-Object {
-        -not (Test-Path -LiteralPath (Join-Path $RepoPath ".mailbox\$_.cursor"))
+        -not (Test-Path -LiteralPath (Join-Path $mailboxDir "$_.cursor"))
     })
 if ($agentsWithoutCursor.Count -gt 0) {
     $initCommand = Get-CocopilotInitCommand -RepoPath $RepoPath -InitScript $initMailboxScript
-    $logKilobytes = [Math]::Ceiling((Get-Item -LiteralPath (Join-Path $RepoPath ".mailbox\session.log.md")).Length / 1KB)
+    $logKilobytes = [Math]::Ceiling((Get-Item -LiteralPath (Join-Path $mailboxDir "session.log.md")).Length / 1KB)
     Write-Warning ("The mailbox has no delivery cursor for $($agentsWithoutCursor -join ' and '). The first watch of " +
         "each agent without a cursor replays the whole session log ($logKilobytes KB) from its start. That is the " +
         "safe default. To count the log so far as handled instead, first make sure every entry so far is handled, " +
@@ -397,6 +398,7 @@ function Start-CopilotAgent {
         [string]$RepoPath,
         [string]$ContextRoot,
         [string]$CocopilotRoot,
+        [string]$MailboxDir,
         [string]$AgentCommand,
         [string[]]$AgentArgs,
         [string]$Name,
@@ -412,6 +414,7 @@ function Start-CopilotAgent {
     $repoQ = ConvertTo-SingleQuoted $RepoPath
     $nameQ = ConvertTo-SingleQuoted $Name
     $addDirQ = ConvertTo-SingleQuoted $CocopilotRoot
+    $mailboxDirQ = ConvertTo-SingleQuoted $MailboxDir
     $contextRootQ = if ($ContextRoot) { ConvertTo-SingleQuoted $ContextRoot } else { "" }
     $renderScriptQ = ConvertTo-SingleQuoted (Join-Path $CocopilotRoot "scripts\render-prompt.ps1")
     $renderAgent = if ($AgentRole -eq "agent-a") { "a" } else { "b" }
@@ -428,14 +431,16 @@ function Start-CopilotAgent {
 
     # --add-dir grants read/run access to cocopilot's own install (for
     # COLLABORATION.md and the watch/init scripts) even if AgentCommand's
-    # underlying alias doesn't already pass --allow-all-paths. A second
+    # underlying alias doesn't already pass --allow-all-paths. The second
+    # grants exactly this pair's mailbox directory, which lives outside the
+    # target and the install (never the whole state folder). A third
     # --add-dir opens the optional workspace context root; the read-only
     # discipline for it is the protocol's, not the CLI's.
     $contextDirArg = if ($ContextRoot) { "--add-dir $contextRootQ " } else { "" }
-    # Direct transport: the id registered in .mailbox/sessions.json, so the
+    # Direct transport: the id registered in the mailbox's sessions.json, so the
     # peer's send_session_message reaches exactly this session.
     $sessionIdArg = if ($SessionId) { "--session-id $(ConvertTo-SingleQuoted $SessionId) " } else { "" }
-    $copilotInvocation = ("& $agentCommandQ " + $(if ($agentArgsQ) { "$agentArgsQ " } else { "" }) + "-C $repoQ -n $nameQ $sessionIdArg--add-dir $addDirQ $contextDirArg-i `$prompt").Trim()
+    $copilotInvocation = ("& $agentCommandQ " + $(if ($agentArgsQ) { "$agentArgsQ " } else { "" }) + "-C $repoQ -n $nameQ $sessionIdArg--add-dir $addDirQ --add-dir $mailboxDirQ $contextDirArg-i `$prompt").Trim()
 
     # Runs first in the new window: an explicit -ShellExe that points at an
     # older pwsh must fail before anything else happens.
@@ -497,7 +502,6 @@ Write-Host ("Agent B -> '{0}' | command: {1} | model: {2} | effort: {3} | contex
 
 $sessionIdA = $null
 $sessionIdB = $null
-$mailboxDir = Join-Path $RepoPath ".mailbox"
 if ($Transport -eq "direct") {
     # Both registrations land in one locked write before either window
     # opens, so neither agent can render a banner or post an entry against
@@ -513,8 +517,8 @@ if ($Transport -eq "direct") {
     Write-Host "Mailbox transport: removed the direct-transport registration left by an earlier launch." -ForegroundColor Cyan
 }
 
-Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentACommand -AgentArgs $AgentAArgs -Name $NameA -AgentRole "agent-a" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal -Transport $Transport -SessionId $sessionIdA
+Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -MailboxDir $mailboxDir -AgentCommand $AgentACommand -AgentArgs $AgentAArgs -Name $NameA -AgentRole "agent-a" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal -Transport $Transport -SessionId $sessionIdA
 Start-Sleep -Seconds 1
-Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -AgentCommand $AgentBCommand -AgentArgs $AgentBArgs -Name $NameB -AgentRole "agent-b" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal -Transport $Transport -SessionId $sessionIdB
+Start-CopilotAgent -RepoPath $RepoPath -ContextRoot $ContextRoot -CocopilotRoot $cocopilotRoot -MailboxDir $mailboxDir -AgentCommand $AgentBCommand -AgentArgs $AgentBArgs -Name $NameB -AgentRole "agent-b" -ShellExe $ShellExe -UseWindowsTerminal:$UseWindowsTerminal -Transport $Transport -SessionId $sessionIdB
 
 Write-Host "Launched $NameA via '$AgentACommand' and $NameB via '$AgentBCommand' (shell: $ShellExe, transport: $Transport), paired on $RepoPath." -ForegroundColor Green

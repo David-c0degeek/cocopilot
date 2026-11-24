@@ -14,7 +14,7 @@
     background-command-completed notification.
 
     With -Role (agent-a or agent-b), the session log is the inbox. A
-    per-role cursor (.mailbox/<role>.cursor) records how far this agent
+    per-role cursor (<role>.cursor in the mailbox) records how far this agent
     has handled the log. On start the script delivers every entry after
     the cursor at once, except the agent's own; entries written while the
     agent was busy are never lost. With nothing to deliver it polls the
@@ -23,8 +23,17 @@
     agent's own handoff update.
 
     Delivery is not processing: the cursor never moves on its own. The
-    output ends with "ACK_TOKEN: <generation>:<offset>" and a ready-made
-    "RE_ARM:" command. Handle the entries, then re-arm with that token
+    output ends with "ACK_TOKEN: <generation>:<offset>", a ready-made
+    "RE_ARM:" command and one compact ownership line:
+    "OWNERSHIP (<changed|unchanged|current>): epoch=<n> state=<s>
+    owner=<role> from=<role|none> to=<role|none> model=<owner_model>
+    manifest=<dirty_manifest count> head=<12 chars> baseline=<8 chars|none>".
+    head and baseline are shortened for display only; -Full prints the
+    whole implementer.json instead. Every value is escaped (\\, \r, \n,
+    \uXXXX) and quoted when it holds spaces, so it cannot forge a line.
+    The record is checked first: one that is not a valid ownership record
+    fails the run before any ACK token is printed and before -Ack moves
+    the cursor. Handle the entries, then re-arm with that token
     (-Ack): the cursor moves to the end of what was delivered. Without
     -Ack the same entries are delivered again (at least once). A token is
     accepted only for the current log generation, at the exact end of an
@@ -69,7 +78,7 @@
 
 .PARAMETER NoWait
     Never block: deliver the peer entries that are waiting, or print
-    NO_NEW_ENTRIES and the ownership record, then exit 0. Requires -Role.
+    NO_NEW_ENTRIES and the ownership line, then exit 0. Requires -Role.
     Used by the direct transport, where a native peer message wakes the
     agent instead of a background watch. With -Ack it first moves the
     cursor, then delivers anything that arrived meanwhile, so an agent
@@ -78,6 +87,13 @@
     growing: it waits once, at most until the log has been quiet for the
     settle period, and reports INCOMPLETE_TAIL_PENDING if the entry is
     still unsettled. It never enters the polling loop.
+
+.PARAMETER Full
+    Print the whole implementer.json ("OWNERSHIP_RECORD (<...>):" and the
+    JSON) instead of the compact OWNERSHIP line. Requires -Role. The
+    printed RE_ARM command keeps it. Before you accept a handoff, read
+    the full record with -NoWait -Full: without -NoWait the watch blocks
+    once everything is acknowledged.
 
 .EXAMPLE
     .\scripts\watch-mailbox.ps1 -RepoPath C:\Repos\some-other-project -Role agent-a
@@ -101,7 +117,8 @@ param(
     [ValidatePattern('^[0-9a-f]{32}:\d{1,18}$')][string]$Ack,
     [ValidateRange(0, [int]::MaxValue)][int]$TimeoutSeconds = 0,
     [ValidateRange(1, 3600)][int]$PollIntervalSeconds = 3,
-    [switch]$NoWait
+    [switch]$NoWait,
+    [switch]$Full
 )
 
 $ErrorActionPreference = "Stop"
@@ -110,18 +127,21 @@ $ErrorActionPreference = "Stop"
 
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
 $initMailboxScript = Join-Path $PSScriptRoot "init-mailbox.ps1"
-$mailboxDir = Join-Path $RepoPath ".mailbox"
-$implementerPath = Join-Path $mailboxDir "implementer.json"
-$laneA = Join-Path $mailboxDir "agent-a.md"
-$laneB = Join-Path $mailboxDir "agent-b.md"
-$sessionLogPath = Join-Path $mailboxDir "session.log.md"
-
 if ($Ack -and -not $Role) {
     throw "-Ack needs -Role: an ACK token moves that role's cursor."
 }
 if ($NoWait -and -not $Role) {
     throw "-NoWait needs -Role: it delivers that role's waiting entries."
 }
+if ($Full -and -not $Role) {
+    throw "-Full needs -Role: without -Role the watcher already prints the whole record."
+}
+
+$mailboxDir = Open-CocopilotMailbox -RepoPath $RepoPath
+$implementerPath = Join-Path $mailboxDir "implementer.json"
+$laneA = Join-Path $mailboxDir "agent-a.md"
+$laneB = Join-Path $mailboxDir "agent-b.md"
+$sessionLogPath = Join-Path $mailboxDir "session.log.md"
 
 foreach ($p in @($implementerPath, $laneA, $laneB, $sessionLogPath)) {
     if (-not (Test-Path -LiteralPath $p)) {
@@ -168,48 +188,19 @@ function Test-LogTailSettled {
     return ([DateTime]::UtcNow - [System.IO.File]::GetLastWriteTimeUtc($sessionLogPath)).TotalSeconds -ge $settleSeconds
 }
 
-function Get-DeliveryScan {
-    <#
-    .SYNOPSIS
-        Splits the log after $From into what to deliver (peer and init
-        entries), which offsets an ACK may name, and how far the delivered
-        and own entries reach.
-    #>
+function Write-OwnershipRecord {
+    # The compact OWNERSHIP line, or with -Full the raw record as before.
     param(
-        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
-        [Parameter(Mandatory)][long]$From,
-        [Parameter(Mandatory)][bool]$TailSettled
+        [Parameter(Mandatory)][ValidateSet("changed", "unchanged", "current")][string]$Label,
+        [Parameter(Mandatory)][string]$RecordText,
+        [Parameter(Mandatory)]$Record
     )
 
-    $segments = [System.Collections.Generic.List[object]]::new()
-    foreach ($entry in @(Get-CocopilotLogEntries -Text $Text)) {
-        if ($entry.End -le $From) { continue }
-        if ($entry.Start -lt $From) {
-            # The cursor points into this entry: text reached it after an
-            # unmarked tail had settled and was acknowledged.
-            $segments.Add([pscustomobject]@{
-                    Stamp = $entry.Stamp; Role = $entry.Role; Start = $From; End = $entry.End; Kind = "Fragment"
-                    Body  = $Text.Substring([int]$From, [int]($entry.End - $From)).Trim("`r", "`n")
-                })
-            continue
-        }
-        $segments.Add($entry)
-    }
-
-    $heldBack = $null
-    if ($segments.Count -gt 0) {
-        $last = $segments[$segments.Count - 1]
-        if ($last.Kind -ne "Complete" -and $last.End -eq $Text.Length -and -not $TailSettled) {
-            $heldBack = $last
-            $segments.RemoveAt($segments.Count - 1)
-        }
-    }
-
-    return [pscustomobject]@{
-        Deliver       = @($segments | Where-Object { $_.Role -ne $Role })
-        AckBoundaries = @($segments | ForEach-Object { [long]$_.End })
-        AckOffset     = if ($segments.Count -gt 0) { [long]$segments[$segments.Count - 1].End } else { $From }
-        HeldBack      = $null -ne $heldBack
+    if ($Full) {
+        Write-Output "OWNERSHIP_RECORD (${Label}):"
+        Write-Output $RecordText.TrimEnd()
+    } else {
+        Write-Output (Format-CocopilotOwnershipLine -Record $Record -Label $Label)
     }
 }
 
@@ -222,6 +213,9 @@ function Write-Delivery {
         [Parameter(Mandatory)][string]$RecordText
     )
 
+    # Before any output: an invalid record fails the run. It is never
+    # summarized with invented values or followed by an ACK token.
+    $record = ConvertFrom-CocopilotOwnershipRecord -Text $RecordText -Path $implementerPath
     $count = @($Scan.Deliver).Count
     $noun = if ($count -eq 1) { "entry" } else { "entries" }
     $recordNote = if ($RecordChanged) { "; the ownership record changed" } else { "" }
@@ -238,11 +232,10 @@ function Write-Delivery {
         foreach ($line in ($segment.Body -split "\r?\n")) { Write-Output "    $line" }
     }
     $token = "${Generation}:$($Scan.AckOffset)"
-    $noWaitSuffix = if ($NoWait) { " -NoWait" } else { "" }
+    $suffix = $(if ($NoWait) { " -NoWait" } else { "" }) + $(if ($Full) { " -Full" } else { "" })
     Write-Output "ACK_TOKEN: $token"
-    Write-Output "RE_ARM: & $(ConvertTo-SingleQuoted $PSCommandPath) -RepoPath $(ConvertTo-SingleQuoted $RepoPath) -Role $Role -Ack $token$noWaitSuffix"
-    Write-Output ("OWNERSHIP_RECORD ({0}):" -f $(if ($RecordChanged) { "changed" } else { "unchanged" }))
-    Write-Output $RecordText.TrimEnd()
+    Write-Output "RE_ARM: & $(ConvertTo-SingleQuoted $PSCommandPath) -RepoPath $(ConvertTo-SingleQuoted $RepoPath) -Role $Role -Ack $token$suffix"
+    Write-OwnershipRecord -Label $(if ($RecordChanged) { "changed" } else { "unchanged" }) -RecordText $RecordText -Record $record
 }
 
 $observedLength = [System.IO.FileInfo]::new($sessionLogPath).Length
@@ -261,6 +254,12 @@ if (-not $cursor.Valid) {
     $from = $cursor.Offset
 }
 
+# Validated before -Ack can move the cursor: with an invalid record the run
+# fails and every mailbox file stays as it was.
+$recordText = Read-CocopilotSharedText -Path $implementerPath
+$null = ConvertFrom-CocopilotOwnershipRecord -Text $recordText -Path $implementerPath
+$recordHash = Get-TextHash -Text $recordText
+
 if ($Ack) {
     $tokenGeneration, $tokenOffsetText = $Ack.Split(":")
     $tokenOffset = [long]$tokenOffsetText
@@ -271,7 +270,7 @@ if ($Ack) {
         throw "ACK token $Ack is behind the cursor (offset $from); the cursor was not moved."
     }
     if ($tokenOffset -gt $from) {
-        $ackScan = Get-DeliveryScan -Text $logText -From $from -TailSettled (Test-LogTailSettled)
+        $ackScan = Get-CocopilotDeliveryScan -Text $logText -From $from -TailSettled (Test-LogTailSettled) -Role $Role
         if ($tokenOffset -notin $ackScan.AckBoundaries) {
             throw "ACK token $Ack does not end an entry after the cursor (offset $from); the cursor was not moved."
         }
@@ -281,9 +280,7 @@ if ($Ack) {
     }
 }
 
-$recordText = Read-CocopilotSharedText -Path $implementerPath
-$recordHash = Get-TextHash -Text $recordText
-$scan = Get-DeliveryScan -Text $logText -From $from -TailSettled (Test-LogTailSettled)
+$scan = Get-CocopilotDeliveryScan -Text $logText -From $from -TailSettled (Test-LogTailSettled) -Role $Role
 if (@($scan.Deliver).Count -gt 0) {
     Write-Delivery -Scan $scan -Generation $generation -Note $note -RecordChanged $false -RecordText $recordText
     exit 0
@@ -301,7 +298,7 @@ if ($NoWait) {
             throw "The session log was replaced while reading (its generation changed); run the read again without -Ack."
         }
         $recordText = Read-CocopilotSharedText -Path $implementerPath
-        $scan = Get-DeliveryScan -Text $logText -From $from -TailSettled (Test-LogTailSettled)
+        $scan = Get-CocopilotDeliveryScan -Text $logText -From $from -TailSettled (Test-LogTailSettled) -Role $Role
         if (@($scan.Deliver).Count -gt 0) {
             Write-Delivery -Scan $scan -Generation $generation -Note $note -RecordChanged $false -RecordText $recordText
             exit 0
@@ -313,8 +310,8 @@ if ($NoWait) {
         Write-Output "NO_NEW_ENTRIES"
         if ($note) { Write-Output "NOTE: $note" }
     }
-    Write-Output "OWNERSHIP_RECORD (current):"
-    Write-Output $recordText.TrimEnd()
+    $record = ConvertFrom-CocopilotOwnershipRecord -Text $recordText -Path $implementerPath
+    Write-OwnershipRecord -Label "current" -RecordText $recordText -Record $record
     exit 0
 }
 
@@ -336,7 +333,7 @@ while ($true) {
             throw "The session log was replaced while watching (its generation changed); run the watch again without -Ack."
         }
         $observedLength = $logLength
-        $scan = Get-DeliveryScan -Text $logText -From $from -TailSettled (Test-LogTailSettled)
+        $scan = Get-CocopilotDeliveryScan -Text $logText -From $from -TailSettled (Test-LogTailSettled) -Role $Role
     }
     if (@($scan.Deliver).Count -gt 0 -or $recordChanged) {
         Write-Delivery -Scan $scan -Generation $generation -Note $note -RecordChanged $recordChanged -RecordText $currentRecord

@@ -6,14 +6,17 @@
 > agreement applies to whichever repository the two of you were paired on
 > for this session — see the session-context banner in your prompt for that
 > repository's exact path. Roles and the ownership handoff below are the
-> coordination mechanism; the durable ownership record lives in
-> `.mailbox/implementer.json` inside that target repository (git-ignored,
-> per-machine). The ephemeral turn-by-turn scratchpads live alongside it as
-> one **lane per agent** — `.mailbox/agent-a.md` and `.mailbox/agent-b.md`
-> (also git-ignored, each written ONLY by the agent it names, overwritten on
-> that agent's turns); every entry written to a lane is also appended to
-> `.mailbox/session.log.md`, the write-once session history and each agent's
-> inbox (see "Mailbox lanes and the session log" below).
+> coordination mechanism; the durable ownership record is `implementer.json`
+> in the pair's mailbox directory, which lives outside the target repository
+> (per-machine, under `%LOCALAPPDATA%\cocopilot\pairs\` or the absolute
+> `COCOPILOT_STATE_HOME`; your session banner names its exact path). Nothing
+> is written into the target. The ephemeral turn-by-turn scratchpads live
+> alongside the record as one **lane per agent** — `agent-a.md` and
+> `agent-b.md` (each written ONLY by the agent it names, overwritten on that
+> agent's turns); every entry written to a lane is also appended to
+> `session.log.md`, the write-once session history and each agent's inbox
+> (see "Mailbox lanes and the session log" below). Mailbox file names below
+> refer to that directory.
 >
 > This is a direct port of a personal `collaboration.md` used for a
 > Claude Code + Codex pairing, generalized so it works for any two `copilot`
@@ -173,8 +176,9 @@ current content — so even re-editing an already modified file changes it.
 Every repository nested inside it — untracked, inside an ignored directory,
 or a submodule — is captured the same way under its own path, so no change
 hides behind its parent's entry for the directory; a link is recorded,
-never followed. Ignored files, and the target's own `.mailbox/`, are not
-part of the state.
+never followed. Ignored files, a legacy in-repo `.mailbox/`, and the
+cocopilot state folder when it lies inside the target, are not part of the
+state.
 
 1. The current implementer finishes or safely pauses, runs the handoff
    command with `-Action Offer`, and posts the offer entry it prints in its
@@ -216,8 +220,9 @@ compares covers the whole root:
   the same facts as a git target: HEAD, staged changes, and every changed
   or untracked path with its content hash. A worktree that appears or
   disappears is a difference too.
-- Every other file below the root, with its size and SHA-256. The root's
-  own `.mailbox/` is skipped; a link is recorded, never followed.
+- Every other file below the root, with its size and SHA-256. A legacy
+  `.mailbox/` at the root and a cocopilot state folder inside the root are
+  skipped; a link is recorded, never followed.
 
 Review revisions do not transfer ownership: the existing implementer remains
 active unless the explicit handoff completes.
@@ -287,8 +292,8 @@ FINDINGS:
 
 ## Mailbox lanes and the session log
 
-Each agent owns exactly one scratchpad lane: `.mailbox/agent-a.md` for
-agent-a, `.mailbox/agent-b.md` for agent-b. An agent writes **only its own
+Each agent owns exactly one scratchpad lane: `agent-a.md` for
+agent-a, `agent-b.md` for agent-b. An agent writes **only its own
 lane, ever** — the peer's lane is read-only to it. One writer per file is
 what makes simultaneous work safe: there is nothing to race, so both
 agents can post at the same moment without clobbering each other.
@@ -305,7 +310,7 @@ match your own role from the session banner — never infer it from
 whether you currently happen to be driving or navigating.
 
 A lane holds its agent's current turn only and is overwritten on each of
-that agent's writes. `.mailbox/session.log.md` is the write-once merged
+that agent's writes. `session.log.md` is the write-once merged
 history of the session; every entry an agent writes to its lane (THINKING /
 PROPOSAL / CHALLENGE / DESIGN_AGREED / SYNC / ACK / INTERJECT / QUESTION /
 ANSWER / STATUS / HANDOFF_OFFER / HANDOFF_ACCEPT / VERIFY_REQUEST / verdict
@@ -320,7 +325,7 @@ lane **last**.
 
 The log is also each agent's **inbox**. The watch command (or, with the
 direct transport, the read command — see "Transport" below) delivers every
-peer entry after that agent's cursor (`.mailbox/<role>.cursor`) at once,
+peer entry after that agent's cursor (`<role>.cursor`) at once,
 and otherwise waits for the next peer entry or for any change to the
 ownership record — including the agent's own handoff update. The cursor
 moves only when the agent acknowledges a delivery by re-arming with its
@@ -333,6 +338,26 @@ without delivering it is a person's decision, never an agent's:
 (written before cocopilot added end markers), `INCOMPLETE` or `FRAGMENT`
 are not proven complete: treat their content as unverified, and ask the
 peer to re-post anything that looks cut off.
+
+Each delivery, and each `NO_NEW_ENTRIES` read, ends with one compact
+`OWNERSHIP (<changed|unchanged|current>):` line instead of the whole
+ownership record: epoch, state, owner, from, to, model, the number of
+dirty-manifest entries, and a shortened head and baseline that are for
+display only. Add `-Full` to the watch or read command to print the whole
+`implementer.json`. Before any handoff Accept, read the full record with
+a one-shot read and the real diff: the read command with `-Full`, the
+watch command with `-NoWait -Full` (without `-NoWait` the watch blocks
+once everything is acknowledged), or `implementer.json` itself. The
+`HANDOFF_OFFER` entry is not a substitute. The watch fails, and moves no
+cursor, when the record is not a valid ownership record.
+
+On every (re)start an agent runs the status command
+(`mailbox-status.ps1`) first. It prints a small read-only index:
+ownership, unread peer entries, the current work unit, the latest verdict,
+the pinned verify request and what needs reading. The status is an index,
+not a delivery: it moves no cursor, and it never authorises
+implementation. Drain with the watch or read command before acting on an
+entry.
 
 ### Transport: how an agent is woken
 
@@ -351,7 +376,7 @@ session banner names it.
 Direct transport rules:
 
 - The launcher registers both agents' session ids in
-  `.mailbox/sessions.json`, bound to the target and the Copilot
+  the mailbox's `sessions.json`, bound to the target and the Copilot
   configuration directory, before either window opens.
 - After every committed lane entry, the lane write command prints a
   `NOTIFY_PEER:` line. The agent calls `send_session_message` once, with
@@ -375,8 +400,9 @@ Direct transport rules:
 - Limits: delivery is cooperative. If an agent crashes between its lane
   write and its send, its peer sleeps until the restarted agent's resync
   hint or the user's next prompt. Native messages reach only live
-  sessions; restart a closed window with `copilot --resume <its session
-id>` to keep its registration.
+  sessions; restart a closed window with
+  `copilot --resume <its session id> --add-dir <pair dir from the banner's Mailbox line> --add-dir <cocopilot install>`
+  to keep its registration.
 
 The preferred way to post a lane entry is the session banner's own **Lane
 write command** — `scripts/write-lane.ps1 -RepoPath <repo> -Role <your
@@ -451,7 +477,7 @@ write command plus `-VerifyRequest` (following the log-first rule like any
 entry), containing: the acceptance criteria, how to run the checks, the
 `WORK_UNIT` slug, and the exact `ROUND: <n>/<max>` value the verifier must
 emit — the next review-attempt ordinal. The script also pins the request to
-`.mailbox/verify-request.md`, stamped with its author and the ownership
+the mailbox's `verify-request.md`, stamped with its author and the ownership
 epoch, where later turns cannot overwrite it; only the active implementer
 can pin one. The verifier may not read the session log or the lanes, so it
 is handed everything and derives nothing.
@@ -477,13 +503,13 @@ ordinal escalates to the user per the round rules.
 
 ## Ownership record format
 
-The durable ownership authority is `.mailbox/implementer.json` (git-ignored),
+The durable ownership authority is `implementer.json` in the mailbox,
 not the lane prose, which is overwritten each turn. It is replaced whole
 through a same-directory temp file and a rename, so a reader sees the old
 or the new record, never a missing or partial one; nothing is claimed about
 power loss. Every change goes through `scripts/handoff.ps1` (or
 `init-mailbox.ps1`), which holds the ownership lock
-(`.mailbox/implementer.lock`) from reading the record to replacing it, so
+(`implementer.lock`) from reading the record to replacing it, so
 two updates never interleave. The lock file is removed on release; one
 left behind by a crashed process holds nothing and is reused by the next
 update. Never edit the file with any other tool. Shape:
@@ -514,7 +540,7 @@ update. Never edit the file with any other tool. Shape:
 - `dirty_manifest` holds the open offer's manifest: one
   `{ "fact", "before", "after" }` entry per difference from the baseline,
   where `null` means absent on that side.
-- `baseline` references the immutable `.mailbox/baseline-<id>.json`
+- `baseline` references the immutable `baseline-<id>.json`
   snapshot taken when this ownership began, with its SHA-256. The record is
   the only commit point: a baseline file written for an update that never
   committed is simply unreferenced. Outside a handoff, a baseline is taken

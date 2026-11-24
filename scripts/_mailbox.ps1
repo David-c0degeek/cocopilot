@@ -10,7 +10,8 @@
 function Get-CocopilotMailboxFileNames {
     <#
     .SYNOPSIS
-        The fixed file names cocopilot creates inside a target's .mailbox/.
+        The fixed file names cocopilot creates inside a mailbox directory
+        (the pair directory, or a legacy in-repo .mailbox/).
         With the baseline files and writer temps (see
         Test-CocopilotMailboxEntryName) they are the only entries
         cleanup-mailbox.ps1 ever deletes there.
@@ -18,7 +19,7 @@ function Get-CocopilotMailboxFileNames {
     return @(
         "implementer.json", "agent-a.md", "agent-b.md", "session.log.md",
         "agent-a.cursor", "agent-b.cursor", "verify-request.md", "implementer.lock",
-        "sessions.json", "sessions.lock"
+        "sessions.json", "sessions.lock", "target.json"
     )
 }
 
@@ -43,7 +44,7 @@ function Test-CocopilotWriterTempName {
 }
 
 function Test-CocopilotMailboxEntryName {
-    # True for every name cocopilot itself creates inside .mailbox/.
+    # True for every name cocopilot itself creates inside a mailbox directory.
     param([Parameter(Mandatory)][string]$Name)
 
     return ($Name -in (Get-CocopilotMailboxFileNames)) -or
@@ -155,21 +156,7 @@ function Get-CocopilotMailboxFileCheck {
 
     switch ($name) {
         "implementer.json" {
-            $isRecord = $record -is [System.Management.Automation.PSCustomObject]
-            if ($isRecord) {
-                # Property checks first, via the indexer (which returns $null):
-                # a caller running Set-StrictMode -Version Latest would
-                # otherwise turn a missing property into a throw.
-                $properties = $record.PSObject.Properties
-                $isRecord = ($null -ne $properties["epoch"]) -and ($null -ne $properties["state"]) -and ($null -ne $properties["owner"])
-            }
-            if ($isRecord) {
-                $epoch = $record.epoch
-                $isRecord = ($epoch -is [int] -or $epoch -is [long]) -and $epoch -ge 1 -and
-                    ($record.state -cin @("active", "offered")) -and
-                    ($record.owner -cin @("agent-a", "agent-b"))
-            }
-            if (-not $isRecord) {
+            if (-not (Test-CocopilotOwnershipRecordShape -Record $record)) {
                 return [pscustomobject]@{ State = "Foreign"; Reason = "implementer.json is not a cocopilot ownership record" }
             }
         }
@@ -181,6 +168,98 @@ function Get-CocopilotMailboxFileCheck {
         default { throw "Get-CocopilotMailboxFileCheck: no content check is defined for '$name'." }
     }
     return [pscustomobject]@{ State = "Cocopilot"; Reason = $null }
+}
+
+function Test-CocopilotOwnershipRecordShape {
+    <#
+    .SYNOPSIS
+        True when a parsed implementer.json is an ownership record: integer
+        epoch >= 1, state active|offered, owner agent-a|agent-b.
+    #>
+    param([AllowNull()]$Record)
+
+    if ($Record -isnot [System.Management.Automation.PSCustomObject]) { return $false }
+    # Property checks first, via the indexer (which returns $null): a caller
+    # running Set-StrictMode -Version Latest would otherwise turn a missing
+    # property into a throw.
+    $properties = $Record.PSObject.Properties
+    if ($null -eq $properties["epoch"] -or $null -eq $properties["state"] -or $null -eq $properties["owner"]) { return $false }
+    $epoch = $Record.epoch
+    return ($epoch -is [int] -or $epoch -is [long]) -and $epoch -ge 1 -and
+        ($Record.state -cin @("active", "offered")) -and
+        ($Record.owner -cin @("agent-a", "agent-b"))
+}
+
+function ConvertFrom-CocopilotOwnershipRecord {
+    <#
+    .SYNOPSIS
+        Parses implementer.json text that was already read, and returns the
+        record. Throws when it is not valid JSON or not an ownership record
+        (see Test-CocopilotOwnershipRecordShape); never fills in defaults.
+    #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $pairDir = Split-Path -Parent $Path
+    $restore = ("No file was changed. Inspect implementer.json in the pair directory '$pairDir'. Restore it from a " +
+        "backup if you have one. Otherwise use the last HANDOFF_OFFER and HANDOFF_ACCEPT entries in its session.log.md " +
+        "only as evidence for a manual recovery decision by the user; do not reconstruct a record from them " +
+        "automatically, because they are not a full saved record. A reset (init-mailbox.ps1 -Force) or a cleanup " +
+        "(cleanup-mailbox.ps1) applies only once the record is valid again.")
+    try {
+        $record = ConvertFrom-Json -InputObject $Text -NoEnumerate -ErrorAction Stop
+    } catch {
+        throw "The ownership record '$Path' is not valid JSON ($($_.Exception.Message)). $restore"
+    }
+    if (-not (Test-CocopilotOwnershipRecordShape -Record $record)) {
+        throw ("The ownership record '$Path' is not a cocopilot ownership record: it needs an integer epoch >= 1, " +
+            "state active or offered, and owner agent-a or agent-b. $restore")
+    }
+    return $record
+}
+
+function Format-CocopilotOwnershipLine {
+    <#
+    .SYNOPSIS
+        One compact line that summarizes a validated ownership record:
+        "OWNERSHIP (<label>): epoch=.. state=.. owner=.. from=.. to=..
+        model=.. manifest=<count> head=<12 chars> baseline=<8 chars|none>".
+
+    .DESCRIPTION
+        Every value goes through ConvertTo-CocopilotLineValue, so no value can
+        break the line or forge another output line. head and baseline are
+        shortened for display only; the full values stay in implementer.json.
+    #>
+    param(
+        [Parameter(Mandatory)]$Record,
+        [Parameter(Mandatory)][ValidateSet("changed", "unchanged", "current")][string]$Label
+    )
+
+    $properties = $Record.PSObject.Properties
+    $from = if ($null -ne $properties["from"] -and $null -ne $Record.from) { [string]$Record.from } else { "none" }
+    $to = if ($null -ne $properties["to"] -and $null -ne $Record.to) { [string]$Record.to } else { "none" }
+    $model = if ($null -ne $properties["owner_model"] -and $null -ne $Record.owner_model) { [string]$Record.owner_model } else { "none" }
+    $manifest = if ($null -ne $properties["dirty_manifest"]) { @($Record.dirty_manifest | Where-Object { $null -ne $_ }).Count } else { 0 }
+    $head = "none"
+    if ($null -ne $properties["head"] -and $null -ne $Record.head) {
+        $fullHead = [string]$Record.head
+        $head = $fullHead.Substring(0, [Math]::Min(12, $fullHead.Length))
+    }
+    $baseline = "none"
+    if ($null -ne $properties["baseline"] -and $Record.baseline -is [System.Management.Automation.PSCustomObject] -and
+        $null -ne $Record.baseline.PSObject.Properties["id"] -and $null -ne $Record.baseline.id) {
+        $id = [string]$Record.baseline.id
+        $baseline = $id.Substring(0, [Math]::Min(8, $id.Length))
+    }
+
+    $fields = [ordered]@{
+        epoch = [string]$Record.epoch; state = [string]$Record.state; owner = [string]$Record.owner
+        from = $from; to = $to; model = $model; manifest = [string]$manifest; head = $head; baseline = $baseline
+    }
+    $pairs = foreach ($key in $fields.Keys) { "$key=$(ConvertTo-CocopilotLineValue -Value $fields[$key])" }
+    return "OWNERSHIP (${Label}): $($pairs -join ' ')"
 }
 
 function Test-IsCocopilotInstall {

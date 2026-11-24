@@ -43,14 +43,14 @@ dot-sources [`profile/cocopilot.profile.ps1`](profile/cocopilot.profile.ps1) —
 updates need no profile edits. Run it from pwsh 7.4 or later. It refuses Windows PowerShell. If an earlier version
 registered cocopilot in your Windows PowerShell profile, delete that `# >>> cocopilot >>>` block by hand. You get:
 
-| Function                                                                                        | Does                                                                                                                                                                                                                                                                                                                                      |
-| ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cocopilot-start [-RepoPath] [-Name] [-AgentAModel] [-AgentBModel] [-Transport] […]`            | Inits the mailbox, lets you assign a model/settings to each role when omitted, and opens both named agent tabs. Defaults to the current directory. `-Transport direct` wakes the agents with native peer messages instead of polling.                                                                                                     |
-| `cocopilot-models [-Raw] [-NoFallback]`                                                         | Shows the models available to your Copilot account plus supported effort/context settings and token limits.                                                                                                                                                                                                                               |
-| `cocopilot-prompt -Agent a\|b\|verifier [-RepoPath] [-ContextRoot] [-AllowNonGit] [-Transport]` | Copies that role's paste-ready (re)start prompt to the clipboard — for crashed windows, manual role adds, or a fresh verifier session. In a direct-transport pair, restart a crashed agent with `copilot --resume <its id>` instead. Roles `a` and `b` init a missing mailbox; `verifier` never does and needs a pinned `VERIFY_REQUEST`. |
-| `cocopilot-cleanup [-RepoPath] [-Recurse] [-WhatIf] [-Confirm]`                                 | Removes cocopilot's `.mailbox\` files and ignore rule when you're done. `-Recurse` cleans every paired repo under `-RepoPath`. `-WhatIf` previews; `-Confirm` asks before each removal.                                                                                                                                                   |
-| `cocopilot-update`                                                                              | `git pull` + re-register (reruns the installer).                                                                                                                                                                                                                                                                                          |
-| `copilot-opus` / `copilot-sol` / `copilot-terra`                                                | Plain `copilot` launchers with cocopilot's default model/flags.                                                                                                                                                                                                                                                                           |
+| Function                                                                                        | Does                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cocopilot-start [-RepoPath] [-Name] [-AgentAModel] [-AgentBModel] [-Transport] […]`            | Inits the mailbox, lets you assign a model/settings to each role when omitted, and opens both named agent tabs. Defaults to the current directory. `-Transport direct` wakes the agents with native peer messages instead of polling.                                                                                                                                                                                     |
+| `cocopilot-models [-Raw] [-NoFallback]`                                                         | Shows the models available to your Copilot account plus supported effort/context settings and token limits.                                                                                                                                                                                                                                                                                                               |
+| `cocopilot-prompt -Agent a\|b\|verifier [-RepoPath] [-ContextRoot] [-AllowNonGit] [-Transport]` | Copies that role's paste-ready (re)start prompt to the clipboard — for crashed windows, manual role adds, or a fresh verifier session. In a direct-transport pair, restart a crashed agent with `copilot --resume <its id>` instead. Start such a window with `--add-dir <pair dir>` (the banner's `Mailbox:` path). Roles `a` and `b` init a missing mailbox; `verifier` never does and needs a pinned `VERIFY_REQUEST`. |
+| `cocopilot-cleanup [-RepoPath] [-Recurse] [-List] [-PairId] [-WhatIf] [-Confirm]`               | Removes the target's mailbox (and a legacy in-repo `.mailbox\` with its ignore rule) when you're done. `-Recurse` cleans every pair under `-RepoPath`. `-List` shows every pair read-only; `-PairId` cleans one whose folder moved or is gone. `-WhatIf` previews; `-Confirm` asks before each removal.                                                                                                                   |
+| `cocopilot-update`                                                                              | `git pull` + re-register (reruns the installer).                                                                                                                                                                                                                                                                                                                                                                          |
+| `copilot-opus` / `copilot-sol` / `copilot-terra`                                                | Plain `copilot` launchers with cocopilot's default model/flags.                                                                                                                                                                                                                                                                                                                                                           |
 
 ## Quick start
 
@@ -91,7 +91,7 @@ For a model without `medium` effort, the picker preselects `cli-default`, the Co
 ```mermaid
 sequenceDiagram
     participant A as Agent A (driver)
-    participant M as .mailbox/
+    participant M as mailbox
     participant B as Agent B (navigator)
     A->>M: PROPOSAL (huddle: think together before any edit)
     M-->>B: watcher delivers the new entry
@@ -108,20 +108,24 @@ sequenceDiagram
     Note over A,B: you arbitrate when they disagree
 ```
 
-- **The mailbox is the only channel.** A few files inside the target repo, git-ignored through `.git/info/exclude`
-  (never your `.gitignore`) — and each agent writes **only its own lane**, so both can post at the same moment without
-  ever clobbering each other:
+- **The mailbox is the only channel.** A few files in a per-target pair directory **outside** the target repo —
+  nothing is written into the repo itself — and each agent writes **only its own lane**, so both can post at the same
+  moment without ever clobbering each other. The pair directory is `<StateRoot>\pairs\<leaf>-<16 hex>\`: `StateRoot`
+  is `%LOCALAPPDATA%\cocopilot`, or the absolute path in `COCOPILOT_STATE_HOME`; `<leaf>` is the target's folder name
+  and the hex comes from a hash of its canonical path, so a junction, subst drive or other letter case reaches the
+  same pair. Every session banner prints the real paths.
 
-  | File                          | Purpose                                                         | Lifetime                                                                     |
-  | ----------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-  | `.mailbox/implementer.json`   | Who owns the working tree (single source of truth)              | Replaced whole by `handoff.ps1` under a lock; never seen partial             |
-  | `.mailbox/agent-a.md`         | Agent A's lane: thinking, syncs, offers, reviews                | Overwritten on each of A's turns; written only by A                          |
-  | `.mailbox/agent-b.md`         | Agent B's lane: same, for B                                     | Overwritten on each of B's turns; written only by B                          |
-  | `.mailbox/session.log.md`     | Complete merged session history — and each agent's inbox        | Append-only, each entry closed by an end marker; survives `-Force`           |
-  | `.mailbox/agent-a.cursor`     | How far agent A has acknowledged the log (and `agent-b.cursor`) | Moved only by that agent's acknowledged watch                                |
-  | `.mailbox/verify-request.md`  | The pinned `VERIFY_REQUEST` the fresh-eyes verifier reads       | Replaced by the next pinned request                                          |
-  | `.mailbox/baseline-<id>.json` | Snapshot of the target when the current ownership began         | Immutable; replaced by the next handoff                                      |
-  | `.mailbox/sessions.json`      | Direct transport only: both agents' registered session ids      | Written by `start-agents.ps1 -Transport direct`; removed by a mailbox launch |
+  | File                 | Purpose                                                         | Lifetime                                                                     |
+  | -------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+  | `target.json`        | The canonical target this pair directory belongs to             | Written first by `init-mailbox.ps1`; a mismatch is refused, never adopted    |
+  | `implementer.json`   | Who owns the working tree (single source of truth)              | Replaced whole by `handoff.ps1` under a lock; never seen partial             |
+  | `agent-a.md`         | Agent A's lane: thinking, syncs, offers, reviews                | Overwritten on each of A's turns; written only by A                          |
+  | `agent-b.md`         | Agent B's lane: same, for B                                     | Overwritten on each of B's turns; written only by B                          |
+  | `session.log.md`     | Complete merged session history — and each agent's inbox        | Append-only, each entry closed by an end marker; survives `-Force`           |
+  | `agent-a.cursor`     | How far agent A has acknowledged the log (and `agent-b.cursor`) | Moved only by that agent's acknowledged watch                                |
+  | `verify-request.md`  | The pinned `VERIFY_REQUEST` the fresh-eyes verifier reads       | Replaced by the next pinned request                                          |
+  | `baseline-<id>.json` | Snapshot of the target when the current ownership began         | Immutable; replaced by the next handoff                                      |
+  | `sessions.json`      | Direct transport only: both agents' registered session ids      | Written by `start-agents.ps1 -Transport direct`; removed by a mailbox launch |
 
 - **Nobody polls you, and nothing gets lost.** Each agent runs `watch-mailbox.ps1 -Role <its-role>` in the background
   while blocked on the peer. It delivers every peer entry the agent hasn't acknowledged yet — at once if some are
@@ -133,7 +137,7 @@ sequenceDiagram
   After each lane entry the writer calls Copilot's native `send_session_message` tool, which wakes the idle peer within
   about a second. The peer then drains the same mailbox with `watch-mailbox.ps1 -NoWait`. The mailbox stays the only
   source of truth, so cursors, acknowledgements and ownership work exactly as in the default transport. It needs the
-  user-level setting `copilot config sessionManagementTools.enabled on`, and `.mailbox/` stays in the target repo. See
+  user-level setting `copilot config sessionManagementTools.enabled on`, and uses the same pair directory. See
   COLLABORATION.md "Transport" for the rules and limits.
 
 - **Collaboration is continuous, not post-hoc.** The huddle happens before the first edit; during implementation the
@@ -172,8 +176,9 @@ sequenceDiagram
 
 Every prompt is generic — a **session-context banner** (generated per run) injects what each role needs, so nothing ever
 hardcodes your repo. Both peer roles render from one shared template, so their instructions differ only in the role
-names. Peer-role banners get absolute paths plus ready-to-run watch (or, with the direct transport, read)/init/ownership commands; the verifier banner gets
+names. Peer-role banners get absolute paths plus ready-to-run watch (or, with the direct transport, read)/status/init/ownership commands; the verifier banner gets
 only paths — a read-only role is deliberately never handed a mutating command.
+The status command is a read-only index that an agent runs first on every (re)start, instead of reading the whole log.
 
 ## Command reference
 
@@ -189,15 +194,29 @@ internal helpers, not commands.
 ```
 
 Creates the ownership record and both per-agent lane scratchpads from the two tracked templates, generates the session
-log, and records one delivery cursor per agent and a handoff baseline, all inside the target repo's `.mailbox/`. For a
-Git target not already ignoring `.mailbox/`, it adds a managed rule to the repository's `.git/info/exclude` **before**
-creating any mailbox state. Nothing committable ever exists unprotected, even if init is interrupted. Your tracked
-`.gitignore` is never edited, so `git stash` or `git checkout` can't un-ignore the mailbox.
+log, and records one delivery cursor per agent and a handoff baseline, all in the target's pair directory outside the
+repo (see "The mailbox is the only channel" above). It writes `target.json` first, so every later file is provably this
+target's. Nothing is written into the target, so there is nothing to ignore or commit.
 
 Refuses before changing anything when `-RepoPath` is the cocopilot install running the script, by its own path or through
 an alias (junction, symlink, subst drive). The agents would otherwise edit the scripts they run the protocol with. It
-also refuses when git tracks anything under `.mailbox/`, and when an existing `.mailbox/` holds anything cocopilot
-didn't create.
+also refuses when the state root is or contains the target, when `pairs\` or the pair directory is a link, when the pair
+directory holds anything cocopilot didn't create, or cocopilot files without a `target.json` naming this target, and
+while the target still holds a legacy in-repo mailbox.
+
+**Migrating an in-repo mailbox.** Older versions kept the mailbox in `<RepoPath>\.mailbox\`. Every script refuses such a
+target until you move or discard it. Stop both agents first, then move it unchanged (epoch, log generation, cursors,
+baselines and `sessions.json` stay byte for byte):
+
+```powershell
+.\scripts\init-mailbox.ps1 -RepoPath C:\Repos\your-project -MigrateLegacy -AgentsStopped
+```
+
+It refuses, changing nothing, while a lock file shows an active agent or handoff, while the files still change, or when
+the folder holds anything else. The copy is verified and published with one rename; an interrupted run is completed by
+running the command again. Afterwards it removes the managed `.git/info/exclude` rule and the empty `.mailbox\`. A
+direct-transport pair must then resume its registered sessions (`copilot --resume <id>`) or be relaunched; never paste
+a prompt into a fresh window. To discard the old mailbox instead, run `cleanup-mailbox.ps1` on the target.
 
 To work on cocopilot itself, pair on a separate worktree or clone. The install keeps running the protocol:
 
@@ -282,24 +301,25 @@ Each new tab renders its own role prompt + banner with `render-prompt.ps1` and p
 itself stays small even with long paths. PowerShell's execution policy in a new pwsh session must therefore allow
 cocopilot's scripts, as it already must for the installed profile functions. The rendered prompt still reaches
 `copilot` as one command-line argument, which Windows limits to 32,767 characters. With 220-character paths the prompt
-is about 13,900 characters, so only a much larger template or banner would reach that limit. The working directory is
-the target repo, with read access back to the cocopilot install via `--add-dir`. Whenever `wt.exe` (Windows Terminal)
-is on PATH, both agents open as tabs in the most-recently-used wt.exe window — typically the very window you ran this
-from — instead of separate OS windows; pass `-UseWindowsTerminal:$false` to force plain console windows regardless.
+is about 16,600 characters, so only a much larger template or banner would reach that limit. The working directory is
+the target repo, with access back to the cocopilot install and to exactly this pair's mailbox directory via
+`--add-dir` (never the whole state folder). Whenever `wt.exe` (Windows Terminal) is on PATH, both agents open as tabs in
+the most-recently-used wt.exe window — typically the very window you ran this from — instead of separate OS windows;
+pass `-UseWindowsTerminal:$false` to force plain console windows regardless.
 
-| Parameter                           | Default                                                            | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ----------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-ContextRoot`                      | (none)                                                             | Workspace folder (e.g. a parent dir of many repos) granted as a **read-only search scope** via an extra `--add-dir` + banner note — cross-repo context without widening ownership or writes                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `-AgentACommand` / `-AgentBCommand` | `copilot` on PATH, by full path                                    | Command per agent. An explicit value, such as a profile shortcut function, is launched as given                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `-AgentAModel` / `-AgentBModel`     | picker (`claude-opus-5.5` / `gpt-6.1-sol` suggested)               | Model assigned to that fixed lane identity. Supplying one skips that role's model picker                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `-AgentAEffort` / `-AgentBEffort`   | picker: `medium` when supported; explicit model: CLI default       | `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`; the account-aware picker offers only levels supported by the selected model                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `-AgentAContext` / `-AgentBContext` | picker: `long_context` when supported; explicit model: CLI default | `default` · `long_context`; account-aware selection rejects a tier the model does not support                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `-AgentAArgs` / `-AgentBArgs`       | not bound                                                          | Expert complete argument array before `-C/-n/-i`. Explicitly binding it suppresses all typed model settings and the picker for that role; pass `@()` when a profile function supplies its own flags                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `-NameA` / `-NameB`                 | `cocopilot-agent-a/b`                                              | Session names, and each new window/tab's title. An explicit value always wins; otherwise derived from `-SessionName`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `-SessionName` / `-Name`            | (none)                                                             | Shared name for both tabs and Copilot sessions — e.g. `-Name "12313 polis"` yields `12313 polis - agent a` / `12313 polis - agent b`                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `-UseWindowsTerminal`               | `$true`                                                            | `wt.exe` tabs whenever available (silently falls back to plain console windows otherwise — a no-op default for anyone without Windows Terminal); pass `-UseWindowsTerminal:$false` to force plain windows even when `wt.exe` is installed                                                                                                                                                                                                                                                                                                                                                                   |
-| `-ShellExe`                         | current pwsh                                                       | pwsh executable for the new windows, which load its `$PROFILE`. Windows PowerShell (`powershell.exe`, `powershell_ise.exe`) is rejected, and each window re-checks for PowerShell 7.4+ before it starts `copilot`                                                                                                                                                                                                                                                                                                                                                                                           |
-| `-Transport`                        | `mailbox`                                                          | `mailbox`: each agent waits with a background watch. `direct`: agents wake each other with `send_session_message`. Direct first checks `sessionManagementTools` (enabled, `message` not off, `scope` not `in-process`) and stops with the fix command, refuses `--session-id`/`--resume`/`-r`/`--continue`/`--connect` in raw args, then registers a fresh `--session-id` per agent in `.mailbox/sessions.json` before either window opens. It also adds `--max-autopilot-continues 0`, so autopilot never nudges an agent that is only waiting for its peer. A mailbox launch removes a stale registration |
+| Parameter                           | Default                                                            | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ----------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-ContextRoot`                      | (none)                                                             | Workspace folder (e.g. a parent dir of many repos) granted as a **read-only search scope** via an extra `--add-dir` + banner note — cross-repo context without widening ownership or writes                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `-AgentACommand` / `-AgentBCommand` | `copilot` on PATH, by full path                                    | Command per agent. An explicit value, such as a profile shortcut function, is launched as given                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `-AgentAModel` / `-AgentBModel`     | picker (`claude-opus-5.5` / `gpt-6.1-sol` suggested)               | Model assigned to that fixed lane identity. Supplying one skips that role's model picker                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `-AgentAEffort` / `-AgentBEffort`   | picker: `medium` when supported; explicit model: CLI default       | `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max`; the account-aware picker offers only levels supported by the selected model                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `-AgentAContext` / `-AgentBContext` | picker: `long_context` when supported; explicit model: CLI default | `default` · `long_context`; account-aware selection rejects a tier the model does not support                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `-AgentAArgs` / `-AgentBArgs`       | not bound                                                          | Expert complete argument array before `-C/-n/-i`. Explicitly binding it suppresses all typed model settings and the picker for that role; pass `@()` when a profile function supplies its own flags                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `-NameA` / `-NameB`                 | `cocopilot-agent-a/b`                                              | Session names, and each new window/tab's title. An explicit value always wins; otherwise derived from `-SessionName`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `-SessionName` / `-Name`            | (none)                                                             | Shared name for both tabs and Copilot sessions — e.g. `-Name "12313 polis"` yields `12313 polis - agent a` / `12313 polis - agent b`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `-UseWindowsTerminal`               | `$true`                                                            | `wt.exe` tabs whenever available (silently falls back to plain console windows otherwise — a no-op default for anyone without Windows Terminal); pass `-UseWindowsTerminal:$false` to force plain windows even when `wt.exe` is installed                                                                                                                                                                                                                                                                                                                                                                        |
+| `-ShellExe`                         | current pwsh                                                       | pwsh executable for the new windows, which load its `$PROFILE`. Windows PowerShell (`powershell.exe`, `powershell_ise.exe`) is rejected, and each window re-checks for PowerShell 7.4+ before it starts `copilot`                                                                                                                                                                                                                                                                                                                                                                                                |
+| `-Transport`                        | `mailbox`                                                          | `mailbox`: each agent waits with a background watch. `direct`: agents wake each other with `send_session_message`. Direct first checks `sessionManagementTools` (enabled, `message` not off, `scope` not `in-process`) and stops with the fix command, refuses `--session-id`/`--resume`/`-r`/`--continue`/`--connect` in raw args, then registers a fresh `--session-id` per agent in the mailbox's `sessions.json` before either window opens. It also adds `--max-autopilot-continues 0`, so autopilot never nudges an agent that is only waiting for its peer. A mailbox launch removes a stale registration |
 
 ### `watch-mailbox.ps1` — the listening half
 
@@ -312,26 +332,85 @@ from — instead of separate OS windows; pass `-UseWindowsTerminal:$false` to fo
 With `-Role`, the session log is the inbox. The watcher delivers every entry the **peer** wrote after this agent's
 cursor — at once, so an entry posted while the agent was busy is never missed — and otherwise waits for the next peer
 entry or for any change to `implementer.json`, including the agent's own handoff update. Each entry is shown with its
-heading and its body indented by four spaces. The output ends with an `ACK_TOKEN` and a ready-made `RE_ARM:` command;
-running it after handling the entries acknowledges them and watches again. Without that acknowledgement the same entries
-are delivered again. Entries it cannot prove complete carry a label: `LEGACY` (older than end markers), `INCOMPLETE` (no
-end marker) or `FRAGMENT`. A missing cursor delivers the whole log from its start. Without `-Role`, the watcher observes
-`implementer.json` and both lanes instead (for you, or any outside observer). Exits `0` with something to act on and `1`
-on timeout.
+heading and its body indented by four spaces. The output ends with an `ACK_TOKEN`, a ready-made `RE_ARM:` command and
+one compact ownership line; running `RE_ARM:` after handling the entries acknowledges them and watches again. Without
+that acknowledgement the same entries are delivered again. Entries it cannot prove complete carry a label: `LEGACY`
+(older than end markers), `INCOMPLETE` (no end marker) or `FRAGMENT`. A missing cursor delivers the whole log from its
+start. Without `-Role`, the watcher observes `implementer.json` and both lanes instead (for you, or any outside
+observer), and prints the whole record when one changes. Exits `0` with something to act on and `1` on timeout.
+
+The ownership line replaces the full `implementer.json`, which can hold a long dirty manifest:
+
+```text
+OWNERSHIP (unchanged): epoch=3 state=offered owner=agent-a from=agent-a to=agent-b model=claude-opus-5.5 manifest=12 head=4f1c2a9be0d3 baseline=07fbcba2
+```
+
+`changed`, `unchanged` or `current` tells whether the record changed during this watch. `manifest` is the number of
+dirty-manifest entries. `head` (12 characters) and `baseline` (the first 8 characters of its id) are shortened for
+display only. Every value is escaped (`\\`, `\r`, `\n`, `\uXXXX`) and quoted when it holds a space, so no value can
+forge another output line. `-Full` prints the whole record instead (`OWNERSHIP_RECORD (<...>):` and the JSON), and the
+printed `RE_ARM:` command keeps it. Before you accept a handoff, read the full record with a one-shot read: add
+`-NoWait -Full`, because without `-NoWait` the watcher blocks once everything is acknowledged. The watcher checks the record
+first: when it is not a valid ownership record, the watcher fails with a non-zero exit before it prints an
+`ACK_TOKEN` and before `-Ack` moves the cursor, so no file changes.
 
 With `-NoWait` (requires `-Role`; used by the direct transport) the watcher never polls. It delivers what is waiting, or
-prints `NO_NEW_ENTRIES` with the current ownership record, and exits `0`. Its `RE_ARM:` command keeps `-NoWait`, so after
+prints `NO_NEW_ENTRIES` with the current ownership line, and exits `0`. Its `RE_ARM:` command keeps `-NoWait`, so after
 an acknowledgement it delivers anything that arrived meanwhile: repeat it until `NO_NEW_ENTRIES`. For an unmarked last
 entry it waits once, at most until the log has been quiet for the settle period, and prints `INCOMPLETE_TAIL_PENDING`
 when the entry is still unsettled.
 
-| Parameter              | Default       | Meaning                                                                      |
-| ---------------------- | ------------- | ---------------------------------------------------------------------------- |
-| `-Role`                | (none)        | `agent-a` · `agent-b` — deliver the other agent's entries, move this cursor  |
-| `-Ack`                 | (none)        | The `ACK_TOKEN` of the delivery you handled; refused unless it ends an entry |
-| `-TimeoutSeconds`      | `0` (forever) | Exit 1 after this much silence                                               |
-| `-PollIntervalSeconds` | `3`           | Check frequency, from 1 to 3600 seconds                                      |
-| `-NoWait`              | off           | Deliver or print `NO_NEW_ENTRIES` at once; never poll (needs `-Role`)        |
+| Parameter              | Default       | Meaning                                                                            |
+| ---------------------- | ------------- | ---------------------------------------------------------------------------------- |
+| `-Role`                | (none)        | `agent-a` · `agent-b` — deliver the other agent's entries, move this cursor        |
+| `-Ack`                 | (none)        | The `ACK_TOKEN` of the delivery you handled; refused unless it ends an entry       |
+| `-TimeoutSeconds`      | `0` (forever) | Exit 1 after this much silence                                                     |
+| `-PollIntervalSeconds` | `3`           | Check frequency, from 1 to 3600 seconds                                            |
+| `-NoWait`              | off           | Deliver or print `NO_NEW_ENTRIES` at once; never poll (needs `-Role`)              |
+| `-Full`                | off           | Print the whole `implementer.json` instead of the `OWNERSHIP` line (needs `-Role`) |
+
+### `mailbox-status.ps1` — a read-only index for one agent
+
+```powershell
+.\scripts\mailbox-status.ps1 -RepoPath C:\Repos\your-project -Role agent-a
+```
+
+Prints a few lines that tell an agent where the pairing stands, so it does not read the whole session log after a
+(re)start. It never writes anything: no cursor, acknowledgement, lane, pin, record or temp file changes. The status is
+an index, not a delivery. Drain with the watch or read command before acting on an entry. The status never authorises
+implementation. It fails with a non-zero exit when `implementer.json` is not a valid ownership record. Every item
+names its log character offset (`@<offset>`), and items are always ordered by offset, never by timestamp.
+
+| Line                        | Shows                                                                                                                                                                                                                                                                                                             |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OWNERSHIP (current):`      | The compact ownership line of `watch-mailbox.ps1`; with state `offered` also `PENDING HANDOFF: epoch=<n> from=<role> to=<role>`                                                                                                                                                                                   |
+| `UNREAD:`                   | Peer entries after this role's cursor, each with stamp, role, offset, label and first line, counted like a delivery; an unsettled unmarked last entry counts as a pending tail. A missing or invalid cursor shows the replay count from the log's start                                                           |
+| `LAST <role>:`              | The first line of each role's last complete entry                                                                                                                                                                                                                                                                 |
+| `WORK UNIT:`                | The slug of the latest opener line: `PROPOSAL (work unit: X)`, `PROPOSAL (new work unit: X)`, `PROPOSAL rN (X)`, `PROPOSAL (X)` or `DESIGN_AGREED (X)`. `AMBIGUOUS` when the latest opener entry names different slugs or opens below its first line; `UNKNOWN` without an opener                                 |
+| `VERDICT:`                  | The latest canonical verdict block; `REVISE` is marked `(not complete)`. A later block that is not canonical shows as `VERDICT: INVALID @<offset> (<reason>)`                                                                                                                                                     |
+| `PIN:`                      | The pinned verify request: its log entry, author, epoch, posted stamp, `STALE` when it no longer fits the record, and a later verdict for its `WORK_UNIT`. `AMBIGUOUS` unless exactly one complete log entry has the pin's author, posted stamp and body; `INVALID` when the pin's body is not a `VERIFY_REQUEST` |
+| `NEEDS READING:`            | Since the unit opened: each `QUESTION #n` (open, or answered by the other role's `ANSWER #n`), each `INTERJECT #n [STOP]` or unnumbered `INTERJECT [STOP]` (never marked resolved), and an ambiguous opener entry; each item adds the entry's second line                                                         |
+| `UNCLASSIFIED since opener` | Complete entries since the unit opened whose first line starts with no known protocol keyword                                                                                                                                                                                                                     |
+
+Markers count only outside fenced code blocks and outside lines quoted with `>`.
+A fence opens with 3 or more backticks or tildes and closes only with at least as many of the same character; an
+unclosed fence runs to the end of the entry.
+A status for a small session looks like this:
+
+```text
+OWNERSHIP (current): epoch=1 state=active owner=agent-a from=none to=none model=unknown manifest=0 head=000000000000 baseline=6425c9e3
+UNREAD: 1 after cursor @625
+  2026-11-24 10:28:27Z agent-b @749: ANSWER #1
+Status is an index, not a delivery: drain with the read/watch command before acting.
+LAST agent-a: 2026-11-24 10:28:27Z @625: QUESTION #1
+LAST agent-b: 2026-11-24 10:28:27Z @749: ANSWER #1
+WORK UNIT: token-savers (opened by agent-a @357: PROPOSAL (work unit: token-savers))
+VERDICT: none
+PIN: none
+NEEDS READING: 1
+  QUESTION #1 by agent-a @625 (answered @749): QUESTION #1 | which file holds the scan?
+UNCLASSIFIED since opener: 0
+```
 
 ### `write-lane.ps1` — post one lane entry
 
@@ -353,12 +432,12 @@ never re-appends the log entry. With the direct transport, it then prints a `NOT
 registration does not fit this target or Copilot configuration directory. It never prints either before the entry is
 committed.
 
-| Parameter        | Default      | Meaning                                                                                                                 |
-| ---------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `-RepoPath`      | _(required)_ | Unlike most other commands, no current-directory default — normally invoked with the exact path from the session banner |
-| `-Role`          | _(required)_ | `agent-a` · `agent-b` — which lane to write                                                                             |
-| `-Turn`          | _(required)_ | Raw entry body — no timestamp or `## ...` heading, generated internally                                                 |
-| `-VerifyRequest` | off          | Also pin this `VERIFY_REQUEST` to `.mailbox/verify-request.md` for the fresh-eyes verifier (active implementer only)    |
+| Parameter        | Default      | Meaning                                                                                                                   |
+| ---------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `-RepoPath`      | _(required)_ | Unlike most other commands, no current-directory default — normally invoked with the exact path from the session banner   |
+| `-Role`          | _(required)_ | `agent-a` · `agent-b` — which lane to write                                                                               |
+| `-Turn`          | _(required)_ | Raw entry body — no timestamp or `## ...` heading, generated internally                                                   |
+| `-VerifyRequest` | off          | Also pin this `VERIFY_REQUEST` to the mailbox's `verify-request.md` for the fresh-eyes verifier (active implementer only) |
 
 ### `handoff.ps1` — change ownership
 
@@ -393,33 +472,45 @@ captured (over 20,000 changed or unversioned files or 512 MB to hash).
 Prints one role's paste-ready prompt: the banner plus the role prompt (both peer roles render from `prompts/agent.md`).
 The verifier's banner deliberately contains **no** mutating commands — a read-only role is never handed a loaded gun.
 
-| Parameter      | Values                        | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| -------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `-Agent`       | `a` · `b` · `verifier`        | Which role to render                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `-ContextRoot` | (none)                        | Same read-only workspace scope as `start-agents.ps1` — when pasting manually, also launch that window with `--add-dir <ContextRoot>`                                                                                                                                                                                                                                                                                                                                                                               |
-| `-Transport`   | `auto` · `mailbox` · `direct` | The pair's `.mailbox/sessions.json` decides: direct when it fits this target and Copilot configuration directory, mailbox when there is none. `auto` (default) follows it; an explicit value only asserts it, and any mismatch stops with the reason, so the two agents never end up on different transports. Rendering never registers a session: a direct prompt works only in the window with the registered id, so restart a crashed direct agent with `copilot --resume <id>` (the render warns with that id) |
+The mailbox lives outside the target, so a window you start yourself must be granted it: launch `copilot` with
+`--add-dir <pair dir>` (the banner's `Mailbox:` line shows the path) and `--add-dir <cocopilot install>`. The same
+applies to a fresh verifier session and when you restart a direct-transport agent with `copilot --resume <id>`.
+
+| Parameter      | Values                        | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-Agent`       | `a` · `b` · `verifier`        | Which role to render                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `-ContextRoot` | (none)                        | Same read-only workspace scope as `start-agents.ps1` — when pasting manually, also launch that window with `--add-dir <ContextRoot>`                                                                                                                                                                                                                                                                                                                                                                      |
+| `-Transport`   | `auto` · `mailbox` · `direct` | The pair's `sessions.json` decides: direct when it fits this target and Copilot configuration directory, mailbox when there is none. `auto` (default) follows it; an explicit value only asserts it, and any mismatch stops with the reason, so the two agents never end up on different transports. Rendering never registers a session: a direct prompt works only in the window with the registered id, so restart a crashed direct agent with `copilot --resume <id>` (the render warns with that id) |
 
 ### `cleanup-mailbox.ps1` — leave no trace
 
 ```powershell
 .\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos\your-project          # remove everything
 .\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos\your-project -WhatIf  # preview first
-.\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos -Recurse              # clean every paired repo under C:\Repos
+.\scripts\cleanup-mailbox.ps1 -RepoPath C:\Repos -Recurse              # clean every pair under C:\Repos
+.\scripts\cleanup-mailbox.ps1 -List                                    # show every pair directory, read-only
+.\scripts\cleanup-mailbox.ps1 -PairId old-project-0123456789abcdef     # clean a pair whose folder is gone
 ```
 
-Deletes only the files cocopilot created in `.mailbox/`. The directory goes only when it is then empty; anything else
-stays and is reported. It also removes cocopilot's managed rule from `.git/info/exclude`, and the `.gitignore` block
-that older versions added. Your own rules and the file's encoding survive, CRLF or LF. Before changing anything, it
-refuses the cocopilot install itself (by path or alias), tracked content under `.mailbox/`, a linked `.mailbox/`, and any
-`.mailbox/` that isn't a cocopilot mailbox (no valid ownership record or no cocopilot log marker). Supports `-WhatIf` /
-`-Confirm`.
+Deletes only the files cocopilot created in the target's pair directory, and in a legacy in-repo `.mailbox/`. Each
+directory goes only when it is then empty; anything else stays and is reported. It never deletes the state root,
+`pairs\` or a target folder. For a legacy mailbox it also removes cocopilot's managed rule from `.git/info/exclude`, and
+the `.gitignore` block that older versions added. Your own rules and the file's encoding survive, CRLF or LF.
 
-| Parameter   | Default     | Meaning                                                                                                                     |
-| ----------- | ----------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `-RepoPath` | current dir | Repository to clean up, or — with `-Recurse` — the root to search                                                           |
-| `-Recurse`  | off         | Treat `-RepoPath` as a search root: find and clean up every cocopilot mailbox at or below it (including `-RepoPath` itself) |
+Before changing anything, it refuses the cocopilot install itself (by path or alias); a linked `pairs\` or pair
+directory; a pair directory without a readable `target.json` naming the target, or whose `implementer.json` or
+`session.log.md` isn't cocopilot's; a linked or unreadable `.mailbox/`; and tracked content in a legacy cocopilot
+`.mailbox/`. A `.mailbox/` that isn't a cocopilot mailbox is the project's own: it is left untouched, and so is the
+exclude rule that hides it. Supports `-WhatIf` / `-Confirm`.
 
-With `-Recurse`, the walk never descends into a directory named `.git` or `node_modules`, and never follows a reparse
+| Parameter   | Default     | Meaning                                                                                                                                                                                                                                                                                                                                            |
+| ----------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-RepoPath` | current dir | Repository to clean up, or — with `-Recurse` — the root to search                                                                                                                                                                                                                                                                                  |
+| `-Recurse`  | off         | Treat `-RepoPath` as a search root: clean every pair whose recorded target is at or below it (whole path segments; the root may be gone), and every legacy `.mailbox/` found in it. A pair whose `target.json` is missing, broken or linked is reported as a discovery issue, never deleted; an unfinished migration staging is listed as retained |
+| `-List`     | off         | Read-only: one row per pair directory with `PairId`, `Target`, `TargetExists`, `LastLogWriteUtc`, `SizeBytes`, `Status` (`OK`, `MALFORMED`, `INACCESSIBLE`, or `STAGING` for an unfinished migration) and `Reason`                                                                                                                                 |
+| `-PairId`   | (none)      | Clean one pair directory by its id, for a target that moved or is gone; its `target.json` is shown, never used as a path                                                                                                                                                                                                                           |
+
+With `-Recurse`, the legacy walk never enters a directory named `.git` or `node_modules`, and never follows a reparse
 point (symbolic link, junction, or mount point) — so a junction can't create a traversal cycle back up the tree or walk
 the search outside the requested root. A `.mailbox/` that is itself a reparse point is rejected the same way, in both
 `-Recurse` discovery and the single-target path — cocopilot never creates it that way, and `-Recurse` must never
@@ -460,7 +551,7 @@ Full text: [`COLLABORATION.md`](COLLABORATION.md) — the binding agreement both
 README.md                     you are here
 COLLABORATION.md              the operating agreement both agents follow
 install.ps1                   one-line install/update + profile registration
-.gitignore                    keeps generated .mailbox state out of this repo
+.gitignore                    keeps generated state out of this repo
 assets/
   cocopilot.png               the logo
 profile/
@@ -476,42 +567,50 @@ prompts/
   listening-direct.md         "Listening for peer changes": native peer messages
   verifier.md                 read-only fresh-eyes role
 scripts/
-  _common.ps1                 loads the seven helper files below
+  _common.ps1                 loads the eight helper files below
   _io.ps1                     quoting, stamps, atomic + shared file I/O, git runner
   _mailbox.ps1                mailbox file names and checks, ownership lock
   _log.ps1                    framed log entries, entry parsing, cursors
   _ownership.ps1              workspace fingerprints, manifests, baselines
-  _exclude.ps1                git-local exclude rule for .mailbox/
+  _exclude.ps1                exclude rule of a legacy in-repo .mailbox/
   _launch.ps1                 init command, names, quoting, banner + prompts
   _transport.ps1              direct transport: sessions.json, CLI settings check, peer hint
+  _state.ps1                  state root, pair ids, canonical paths, mailbox checks, migration
   _models.ps1                 account model discovery, picker, argument helpers
-  init-mailbox.ps1            create <RepoPath>/.mailbox/*
+  init-mailbox.ps1            create the pair directory; -MigrateLegacy moves an old one
   list-models.ps1             show available models + supported settings
   start-agents.ps1            launch both copilot windows
   watch-mailbox.ps1           deliver the peer's new log entries
+  mailbox-status.ps1          read-only index: ownership, unread, work unit, verdict, pin
   write-lane.ps1              post one lane entry (log first, lane last)
   handoff.ps1                 offer / accept / cancel ownership, record model
   render-prompt.ps1           print a role prompt for manual paste
   cleanup-mailbox.ps1         remove cocopilot's footprint from a target
 tests/
-  Cocopilot.Tests.ps1         Pester 5 suite (226 tests, pwsh 7.4+)
+  Cocopilot.Tests.ps1         Pester 5 suite (356 tests, pwsh 7.4+)
 ```
 
-The real `.mailbox/` state is created **inside each target repo** (git-ignored there); cocopilot's own repo tracks only
-the two `*.example.*` templates under `templates/`, so a clone or worktree of cocopilot can be a pairing target too.
+The real mailbox state lives in the pair directories under the state root, never inside a target repo; cocopilot's own
+repo tracks only the two `*.example.*` templates under `templates/`, so a clone or worktree of cocopilot can be a
+pairing target too.
 
 ## Tests
 
-226 black-box Pester 5 tests cover init, git-local ignore rules (including non-ASCII paths under an OEM console code
-page), watcher wake/no-wake behavior, lossless log delivery
-(cursors, acknowledgement tokens, redelivery, labelled legacy and incomplete entries, multi-byte offsets), framed and
+356 black-box Pester 5 tests cover init, the external mailbox store (canonical paths and pair ids through
+junctions and letter case, state root checks, refusals of linked, foreign or unproven pair directories, and the
+byte-for-byte `-MigrateLegacy` move of an in-repo mailbox, including resumed runs), legacy git-local ignore rules
+(including non-ASCII paths under an OEM console code page), watcher wake/no-wake behavior, lossless log delivery
+(cursors, acknowledgement tokens, redelivery, labelled legacy and incomplete entries, multi-byte offsets), the compact
+and escaped ownership line and `-Full`, the refusal of an invalid ownership record before any acknowledgement, the
+read-only status index (work-unit openers, question and STOP scoping, fenced and quoted markers, canonical verdicts,
+stale and ambiguous pins, replay counts), framed and
 exclusive log appends under concurrent writers and readers, whole-file replacement that concurrent readers never see
 missing or partial, culture-independent timestamps, the pinned `VERIFY_REQUEST`, ownership handoffs (computed
 manifests including nested repositories, baselines kept across `-Force` and replaced only by `-AcknowledgeHistory`,
 epochs, the ownership lock (also while a released lock file is still being deleted), concurrent accepts,
 partial-capture refusal), own-lane writes and append-only logging, safe
-cleanup (single and recursive, foreign-mailbox and cocopilot-install protection), shared role-template rendering for
-every role, non-git workspace recovery,
+cleanup (single, recursive, `-List` and `-PairId`, foreign-mailbox and cocopilot-install protection), shared
+role-template rendering for every role, non-git workspace recovery,
 unacknowledged history that no launch, mailbox repair or re-run of init skips (a pending peer STOP is still delivered;
 only `-AcknowledgeHistory` counts history as handled), the launch-time warning for a mailbox without delivery cursors,
 session-name/window-title helpers, Windows Terminal command-line quoting, the PowerShell 7.4 requirement and native
@@ -529,15 +628,16 @@ prompt, mistyped switches that every named command refuses, and `-WhatIf`/`-Conf
 Install-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Scope CurrentUser -Force -SkipPublisherCheck
 ```
 
-Run fail-closed from the repo root (copy/paste as-is):
+The suite points `COCOPILOT_STATE_HOME` at a folder under its own test drive, so it never touches your real state
+folder. Run fail-closed from the repo root (copy/paste as-is):
 
 ```powershell
 # single-quoted so the outer shell doesn't expand $-variables before they reach the child host
 pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw "Pester 5 required" }; $c = New-PesterConfiguration; $c.Run.Path = "tests"; $c.Run.Exit = $true; Invoke-Pester -Configuration $c'
 ```
 
-For quick feedback while you work, run the fast subset. It runs the 148 tests without the `Slow` tag and skips the
-other 123 tests. It never replaces the full run above, which stays the check before any commit.
+For quick feedback while you work, run the fast subset. It runs the 204 tests without the `Slow` tag and skips the
+other 152 tests. It never replaces the full run above, which stays the check before any commit.
 
 ```powershell
 # the full-run command plus one filter line

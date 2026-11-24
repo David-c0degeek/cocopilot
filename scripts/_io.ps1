@@ -16,6 +16,48 @@ function ConvertTo-SingleQuoted {
     return "'" + [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Value) + "'"
 }
 
+function ConvertTo-CocopilotDisplayText {
+    <#
+    .SYNOPSIS
+        Escapes text for one output line: "\" -> "\\", CR -> "\r",
+        LF -> "\n", and every other control character, U+2028 and U+2029 ->
+        "\uXXXX". The result can never start another output line.
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
+
+    $escaped = [System.Text.StringBuilder]::new($Value.Length)
+    foreach ($character in $Value.ToCharArray()) {
+        switch ($character) {
+            '\' { [void]$escaped.Append('\\'); continue }
+            "`r" { [void]$escaped.Append('\r'); continue }
+            "`n" { [void]$escaped.Append('\n'); continue }
+            default {
+                if ([char]::IsControl($character) -or $character -eq [char]0x2028 -or $character -eq [char]0x2029) {
+                    [void]$escaped.Append(('\u{0:x4}' -f [int]$character))
+                } else {
+                    [void]$escaped.Append($character)
+                }
+            }
+        }
+    }
+    return $escaped.ToString()
+}
+
+function ConvertTo-CocopilotLineValue {
+    <#
+    .SYNOPSIS
+        One value of a "key=value key=value" output line: escaped with
+        ConvertTo-CocopilotDisplayText, and wrapped in double quotes (with
+        '"' escaped as '\"') when it is empty or holds whitespace, '"' or
+        '=', so it can neither split into two values nor forge another one.
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
+
+    $escaped = ConvertTo-CocopilotDisplayText -Value $Value
+    if ($escaped.Length -gt 0 -and $escaped -notmatch '[\s"=]') { return $escaped }
+    return '"' + $escaped.Replace('"', '\"') + '"'
+}
+
 function Get-CocopilotUtcStamp {
     # InvariantCulture: under th-TH or da-DK the current culture would write a
     # Buddhist year or "." as the time separator into log headings.

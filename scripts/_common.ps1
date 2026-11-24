@@ -3,7 +3,7 @@
 <#
 .SYNOPSIS
     Shared helpers for cocopilot's launcher scripts. Dot-source this, don't
-    run it directly. It loads the seven helper files below. Their order does
+    run it directly. It loads the eight helper files below. Their order does
     not matter at run time, because they only define functions.
 #>
 
@@ -14,3 +14,4 @@
 . (Join-Path $PSScriptRoot "_exclude.ps1")
 . (Join-Path $PSScriptRoot "_launch.ps1")
 . (Join-Path $PSScriptRoot "_transport.ps1")
+. (Join-Path $PSScriptRoot "_state.ps1")

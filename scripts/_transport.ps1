@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Direct-transport helpers: the pair registration in .mailbox/sessions.json,
+    Direct-transport helpers: the pair registration in the mailbox's sessions.json,
     the Copilot CLI settings preflight, and the peer notification that
     write-lane.ps1 prints. _common.ps1 dot-sources this file; don't run it
     directly.
@@ -109,6 +109,9 @@ function Set-CocopilotSessionRegistration {
         if (-not [Guid]::TryParse($sessionId, [ref]$parsed)) { throw "Session id '$sessionId' for $role is not a GUID." }
     }
 
+    # The target's identity is its canonical path, so every alias of it
+    # (junction, subst drive, letter case) reads the same registration.
+    $target = Get-CocopilotCanonicalPath -Path $RepoPath
     $lock = Enter-CocopilotRegistrationLock -MailboxDir $MailboxDir
     try {
         $existing = Read-CocopilotSessionRegistration -MailboxDir $MailboxDir
@@ -123,12 +126,12 @@ function Set-CocopilotSessionRegistration {
                 continue
             }
             $keep = $existing.State -eq "Valid" -and
-                $existing.Record.target -ieq $RepoPath -and
+                (Test-CocopilotSameTarget -RecordedTarget $existing.Record.target -CanonicalTarget $target) -and
                 $existing.Record.configDir -ieq $ConfigDir -and
                 $null -ne $existing.Record.agents.$role
             if ($keep) { $registered[$role] = $existing.Record.agents.$role }
         }
-        $record = [ordered]@{ transport = "direct"; target = $RepoPath; configDir = $ConfigDir; agents = $registered }
+        $record = [ordered]@{ transport = "direct"; target = $target; configDir = $ConfigDir; agents = $registered }
         Write-MailboxJson -Path (Get-CocopilotSessionRegistrationPath -MailboxDir $MailboxDir) -Object $record
     } finally {
         $lock.Dispose()
@@ -190,8 +193,9 @@ function Get-CocopilotPeerNotification {
         return & $warn "sessions.json is invalid ($($registration.Reason))."
     }
     $record = $registration.Record
-    if ($record.target -ine $RepoPath) {
-        return & $warn "sessions.json belongs to target '$($record.target)', not '$RepoPath'."
+    $target = Get-CocopilotCanonicalPath -Path $RepoPath
+    if (-not (Test-CocopilotSameTarget -RecordedTarget $record.target -CanonicalTarget $target)) {
+        return & $warn "sessions.json belongs to target '$($record.target)', not '$target'."
     }
     if ($record.configDir -ine $ConfigDir) {
         return & $warn "sessions.json was registered for Copilot configuration directory '$($record.configDir)', but this shell uses '$ConfigDir'."

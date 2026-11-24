@@ -67,7 +67,7 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "_common.ps1")
 
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
-$mailboxDir = Join-Path $RepoPath ".mailbox"
+$mailboxDir = Open-CocopilotMailbox -RepoPath $RepoPath
 $implementerPath = Join-Path $mailboxDir "implementer.json"
 $peer = if ($Role -eq "agent-a") { "agent-b" } else { "agent-a" }
 

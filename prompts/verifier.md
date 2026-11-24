@@ -20,12 +20,13 @@ Hard rules — you are read-only end to end:
    files, **including untracked/generated files**. If a requested check
    would write, report it as unrun and run a non-writing substitute if
    one exists.
-3. Do **not** read `.mailbox/session.log.md`, and do **not** read either
-   agent's lane. The session narrative would anchor you on the
-   implementation story — the exact contamination this role exists to
-   avoid. Read ONLY: the repository itself, the relevant diff,
-   `.mailbox/implementer.json` (solely to learn the active implementer
-   and the ownership epoch), the pinned `.mailbox/verify-request.md`, and
+3. Do **not** read `session.log.md` in the mailbox directory named in your
+   banner, and do **not** read either agent's lane. The session narrative
+   would anchor you on the implementation story — the exact contamination
+   this role exists to avoid. Read ONLY: the repository itself, the
+   relevant diff, `implementer.json` in that mailbox directory (solely to
+   learn the active implementer and the ownership epoch), the pinned
+   `verify-request.md` there, and
    the collaboration protocol file (path in your banner) — the protocol
    **solely** for the canonical verdict-block format in its "Closing a
    review" section, nothing else from it binds your judgment of the work.

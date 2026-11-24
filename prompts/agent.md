@@ -24,11 +24,18 @@ Before doing anything else:
    sections. Do not paraphrase from memory — read the actual file.
 2. Read the mailbox's `implementer.json` and both lane files (paths in the
    banner). If any is missing, run the init command given in the banner —
-   its default owner is `agent-a`. Do not read the whole `session.log.md`:
-   for context, read only its latest entries, back to the start of the
-   current work unit. Every peer entry you have not acknowledged yet
-   reaches you {{DELIVERY_PATH}} (see "Listening for peer changes"); it
-   comes at once when such entries are waiting.
+   its default owner is `agent-a`. Then, before you read anything from the
+   session log, run the banner's status command: a small read-only index
+   of the ownership record, your unread peer entries, the current work
+   unit, the latest verdict, the pinned verify request and what needs
+   reading. Do not read the whole `session.log.md`. Whenever the status
+   shows `UNREAD` above 0, drain the mailbox as "Listening for peer
+   changes" describes. Read the specific entries it names, or the lanes,
+   when it reports `AMBIGUOUS`, `UNKNOWN` or `NEEDS READING`. The status is
+   an index, not a delivery, and it never authorises implementation.
+   Every peer entry you have not acknowledged yet reaches you
+   {{DELIVERY_PATH}} (see "Listening for peer changes"); it comes at once
+   when such entries are waiting.
 3. Check `implementer.json.owner` and `.state`:
    - If `owner` is `{{ROLE}}` and `state` is `active`, you are the current
      implementer (the **driver**). Proceed with whatever the user asks

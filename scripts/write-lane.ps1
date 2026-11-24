@@ -39,13 +39,13 @@
          handle, so no reader sees it half-written and two writers never
          interleave. Only opening the log is retried, and only on a
          sharing violation (the peer or a reader holds it for a moment).
-      2. With -VerifyRequest, pin the turn to .mailbox/verify-request.md,
+      2. With -VerifyRequest, pin the turn to the mailbox's verify-request.md,
          where the fresh-eyes verifier reads it (see COLLABORATION.md
          "Fresh-eyes verification").
       3. Only then overwrite <Role>.md with the turn body, replaced whole
          (temp file + rename), so a reader never sees it missing or
          partly written.
-      4. With the direct transport (a valid .mailbox/sessions.json written
+      4. With the direct transport (a valid sessions.json in the mailbox, written
          by start-agents.ps1 -Transport direct), print a NOTIFY_PEER line:
          the exact send_session_message call that wakes the peer's
          registered session. The script cannot send it itself, because
@@ -59,7 +59,7 @@
     of cmdlet encoding defaults.
 
 .PARAMETER RepoPath
-    The repository being paired on (its .mailbox/ holds the log + lanes).
+    The repository being paired on (its mailbox holds the log + lanes).
     Required, as in handoff.ps1: there is no current-directory
     default, since this is normally invoked with the exact path already
     resolved in the session banner.
@@ -99,7 +99,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
 $initMailboxScript = Join-Path $PSScriptRoot "init-mailbox.ps1"
-$mailboxDir = Join-Path $RepoPath ".mailbox"
+$mailboxDir = Open-CocopilotMailbox -RepoPath $RepoPath
 $sessionLogPath = Join-Path $mailboxDir "session.log.md"
 $lanePath = Join-Path $mailboxDir "$Role.md"
 $implementerPath = Join-Path $mailboxDir "implementer.json"

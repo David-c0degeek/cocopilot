@@ -47,6 +47,33 @@ function Get-CocopilotContentHash {
     }
 }
 
+function Test-CocopilotSkippedPath {
+    # True when a worktree-relative "/"-separated path lies under one of the
+    # skip prefixes (each ends in "/", so only whole segments match).
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [AllowEmptyCollection()][string[]]$SkipPrefixes = @()
+    )
+
+    foreach ($skipPrefix in $SkipPrefixes) {
+        if ($Path.StartsWith($skipPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Get-CocopilotNestedSkipPrefixes {
+    # The skip prefixes that lie inside the nested worktree at $RelativePath,
+    # re-rooted at that worktree.
+    param(
+        [Parameter(Mandatory)][string]$RelativePath,
+        [AllowEmptyCollection()][string[]]$SkipPrefixes = @()
+    )
+
+    $nestedRoot = $RelativePath.TrimEnd("/") + "/"
+    return @($SkipPrefixes | Where-Object { $_.Length -gt $nestedRoot.Length -and $_.StartsWith($nestedRoot, [System.StringComparison]::OrdinalIgnoreCase) } |
+            ForEach-Object { $_.Substring($nestedRoot.Length) })
+}
+
 function Add-CocopilotGitWorktreeFacts {
     <#
     .SYNOPSIS
@@ -57,8 +84,11 @@ function Add-CocopilotGitWorktreeFacts {
         git worktree nested inside it.
 
     .DESCRIPTION
-        Ignored files are not part of it, and neither is anything under
-        -SkipPrefix (the target's own mailbox). A nested worktree is never
+        Ignored files are not part of it, and neither is anything under one
+        of -SkipPrefixes (worktree-relative, "/"-separated, ending in "/":
+        a legacy in-repo mailbox and a state root inside the target). A
+        nested worktree gets the prefixes that lie inside it, re-rooted at
+        it. A nested worktree is never
         hidden behind its parent's constant "directory" entry: git reports
         each one as a path ending in "/" - untracked ones in its status,
         ones inside ignored directories in its ignored-file listing - and
@@ -71,7 +101,7 @@ function Add-CocopilotGitWorktreeFacts {
         [Parameter(Mandatory)][string]$WorkTree,
         [Parameter(Mandatory)][string]$Label,
         [Parameter(Mandatory)]$Budget,
-        [string]$SkipPrefix
+        [string[]]$SkipPrefixes = @()
     )
 
     $Facts["head|$Label"] = Get-CocopilotGitHead -WorkTree $WorkTree
@@ -82,7 +112,7 @@ function Add-CocopilotGitWorktreeFacts {
     foreach ($record in $status.Split([char]0, [System.StringSplitOptions]::RemoveEmptyEntries)) {
         $state = $record.Substring(0, 2)
         $relativePath = $record.Substring(3)
-        if ($SkipPrefix -and $relativePath.StartsWith($SkipPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+        if (Test-CocopilotSkippedPath -Path $relativePath -SkipPrefixes $SkipPrefixes) { continue }
         if ($relativePath.EndsWith("/")) { $null = $nested.Add($relativePath.TrimEnd("/")) }
         $fullPath = Join-Path $WorkTree $relativePath
         $content = "missing"
@@ -96,7 +126,7 @@ function Add-CocopilotGitWorktreeFacts {
 
     $ignored = (Invoke-CocopilotGit -WorkTree $WorkTree -Arguments @("ls-files", "-z", "--others", "--ignored", "--exclude-standard")).Output
     foreach ($path in $ignored.Split([char]0, [System.StringSplitOptions]::RemoveEmptyEntries)) {
-        if ($path.EndsWith("/") -and -not ($SkipPrefix -and $path.StartsWith($SkipPrefix, [System.StringComparison]::OrdinalIgnoreCase))) {
+        if ($path.EndsWith("/") -and -not (Test-CocopilotSkippedPath -Path $path -SkipPrefixes $SkipPrefixes)) {
             $null = $nested.Add($path.TrimEnd("/"))
         }
     }
@@ -107,7 +137,10 @@ function Add-CocopilotGitWorktreeFacts {
             $gitlinkPath = $entry.Substring($entry.IndexOf("`t") + 1)
             # An uninitialized submodule has no worktree yet; its recorded
             # commit is already part of HEAD and the index.
-            if (Test-Path -LiteralPath (Join-Path (Join-Path $WorkTree $gitlinkPath) ".git")) { $null = $nested.Add($gitlinkPath) }
+            if ((Test-Path -LiteralPath (Join-Path (Join-Path $WorkTree $gitlinkPath) ".git")) -and
+                -not (Test-CocopilotSkippedPath -Path "$gitlinkPath/" -SkipPrefixes $SkipPrefixes)) {
+                $null = $nested.Add($gitlinkPath)
+            }
         }
     }
 
@@ -119,7 +152,8 @@ function Add-CocopilotGitWorktreeFacts {
             $Facts["link|$childLabel"] = "link to $($childItem.LinkTarget)"
         } elseif ($null -ne $childItem -and (Test-Path -LiteralPath (Join-Path $childPath ".git"))) {
             $Facts["worktree|$childLabel"] = "git"
-            Add-CocopilotGitWorktreeFacts -Facts $Facts -WorkTree $childPath -Label $childLabel -Budget $Budget
+            $childPrefixes = Get-CocopilotNestedSkipPrefixes -RelativePath $relativePath -SkipPrefixes $SkipPrefixes
+            Add-CocopilotGitWorktreeFacts -Facts $Facts -WorkTree $childPath -Label $childLabel -Budget $Budget -SkipPrefixes $childPrefixes
         } elseif ($Budget.Complete) {
             $Budget.Complete = $false
             $Budget.Reason = "git reports '$childLabel' as a nested repository that cannot be inspected"
@@ -137,7 +171,8 @@ function Get-CocopilotWorkspaceFingerprint {
         A git target is its repository (see Add-CocopilotGitWorktreeFacts).
         A non-git workspace root is walked: every git worktree below it
         (found by its .git entry, never descended into), and every other file
-        with its size and SHA-256. The root's .mailbox/ is skipped; a link
+        with its size and SHA-256. The root's .mailbox/ is skipped, and so is
+        the cocopilot state root when it lies inside the target; a link
         is recorded, never followed. Complete is false - and a handoff then
         refuses - when a directory cannot be listed or more than -MaxFiles
         files or -MaxBytes bytes would have to be hashed.
@@ -149,6 +184,9 @@ function Get-CocopilotWorkspaceFingerprint {
     )
 
     $facts = [System.Collections.Generic.SortedDictionary[string, string]]::new([System.StringComparer]::Ordinal)
+    # Target-relative; $null unless the state root lies strictly inside the
+    # target (a state root that is or contains it is refused elsewhere).
+    $stateRootPath = Get-CocopilotStateRootSkipPath -RepoPath $RepoPath
     $budget = [pscustomobject]@{ Files = 0; Bytes = 0L; MaxFiles = $MaxFiles; MaxBytes = $MaxBytes; Complete = $true; Reason = $null }
 
     # One rev-parse answers all three questions: inside a worktree, its top
@@ -159,7 +197,9 @@ function Get-CocopilotWorkspaceFingerprint {
     if ($location.ExitCode -eq 0 -and $answers[0].TrimEnd("`r") -eq "true") {
         $topLevel = $answers[1].TrimEnd("`r")
         $prefix = $answers[2].TrimEnd("`r")
-        Add-CocopilotGitWorktreeFacts -Facts $facts -WorkTree $topLevel -Label "." -Budget $budget -SkipPrefix "$prefix.mailbox/"
+        $skipPrefixes = @("$prefix.mailbox/")
+        if ($stateRootPath) { $skipPrefixes += "$prefix$stateRootPath/" }
+        Add-CocopilotGitWorktreeFacts -Facts $facts -WorkTree $topLevel -Label "." -Budget $budget -SkipPrefixes $skipPrefixes
     } else {
         $root = [System.IO.DirectoryInfo]::new($RepoPath)
         $pending = [System.Collections.Generic.Stack[System.IO.DirectoryInfo]]::new()
@@ -176,12 +216,16 @@ function Get-CocopilotWorkspaceFingerprint {
             foreach ($child in $children) {
                 $relativePath = [System.IO.Path]::GetRelativePath($root.FullName, $child.FullName).Replace('\', '/')
                 if ($directory.FullName -eq $root.FullName -and $child.Name -eq ".mailbox") { continue }
+                if ($stateRootPath -and $relativePath -ieq $stateRootPath) { continue }
                 if ($child.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
                     $facts["link|$relativePath"] = "link to $($child.LinkTarget)"
                 } elseif ($child -is [System.IO.DirectoryInfo]) {
                     if (Test-Path -LiteralPath (Join-Path $child.FullName ".git")) {
                         $facts["worktree|$relativePath"] = "git"
-                        Add-CocopilotGitWorktreeFacts -Facts $facts -WorkTree $child.FullName -Label $relativePath -Budget $budget
+                        $childPrefixes = if ($stateRootPath) {
+                            Get-CocopilotNestedSkipPrefixes -RelativePath $relativePath -SkipPrefixes @("$stateRootPath/")
+                        } else { @() }
+                        Add-CocopilotGitWorktreeFacts -Facts $facts -WorkTree $child.FullName -Label $relativePath -Budget $budget -SkipPrefixes $childPrefixes
                     } else {
                         $pending.Push($child)
                     }
@@ -238,7 +282,7 @@ function Test-CocopilotManifestEqual {
 function Save-CocopilotBaseline {
     <#
     .SYNOPSIS
-        Writes a fingerprint as an immutable .mailbox/baseline-<id>.json and
+        Writes a fingerprint as an immutable baseline-<id>.json in the mailbox and
         returns the { id, sha256 } reference the ownership record stores.
     #>
     param(

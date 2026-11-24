@@ -2,17 +2,21 @@
 
 <#
 .SYNOPSIS
-    Initializes the local (git-ignored) mailbox state for a target
-    repository: <RepoPath>/.mailbox/implementer.json, the per-agent lane
-    scratchpads agent-a.md / agent-b.md, session.log.md, and one delivery
-    cursor per agent (agent-a.cursor / agent-b.cursor).
+    Initializes the local mailbox state for a target repository in its
+    pair directory outside the target (<state root>\pairs\<pair-id>, see
+    Get-CocopilotMailboxDir): target.json, implementer.json, the per-agent
+    lane scratchpads agent-a.md / agent-b.md, session.log.md, and one
+    delivery cursor per agent (agent-a.cursor / agent-b.cursor).
 
 .DESCRIPTION
-    cocopilot itself stays centrally installed (this script's own location);
-    the mailbox it manages lives inside whatever repository (or, with
-    -AllowNonGit, workspace root) you're pairing on. Templates are read
-    from this cocopilot install's own templates/*.example.* files, but the
-    real, git-ignored files are written into <RepoPath>/.mailbox/, stamped
+    cocopilot itself stays centrally installed (this script's own location),
+    and so does the mailbox it manages: the state root is
+    $env:COCOPILOT_STATE_HOME (an absolute path) or %LOCALAPPDATA%\cocopilot.
+    Nothing is written into the repository (or, with -AllowNonGit,
+    workspace root) you're pairing on. Templates are read from this
+    cocopilot install's own templates/*.example.* files. target.json, which
+    names the canonical target, is written first; the other files follow,
+    stamped
     with that repository's current git HEAD (or the fixed "non-git-root"
     sentinel, with -AllowNonGit). Safe to re-run: it will not overwrite
     existing implementer.json or lane files unless -Force is passed. The
@@ -32,20 +36,15 @@
     never moved. A record without a baseline keeps none, so handoffs stay
     refused, and -Force keeps the baseline of the record it replaces.
 
-    Before anything is written, does a small safety check: if <RepoPath> is
-    a git repository and .mailbox/ is not ignored yet, this adds cocopilot's
-    managed rule to the repository's git-local exclude file
-    (.git/info/exclude, never committed, untouched by checkout/stash/clean
-    of tracked files) first - so the per-machine mailbox state can't be
-    committed even if init is interrupted mid-write. The tracked .gitignore
-    of the target is never edited.
-
-    Refuses outright, before any of the above, when -RepoPath is the
+    Refuses outright, before anything is written, when -RepoPath is the
     cocopilot install running this script - its own path, or an alias
-    (junction, symlink, subst, mapped drive) to it - when git tracks
-    anything under .mailbox/, or
-    when an existing .mailbox/ holds anything cocopilot does not create
-    itself. A partially initialized cocopilot mailbox is completed on re-run.
+    (junction, symlink, subst, mapped drive) to it - when the target still
+    holds a legacy in-repo cocopilot mailbox (<RepoPath>\.mailbox), when the
+    state root is or contains the target, when the state root's pairs
+    folder or the pair directory is a reparse point, when the pair directory
+    holds anything cocopilot does not create itself, or when it holds
+    cocopilot files without a target.json naming this target. A partially
+    initialized cocopilot mailbox is completed on re-run.
 
 .PARAMETER RepoPath
     The repository to pair on. Defaults to the current directory.
@@ -89,8 +88,31 @@
     with the workspace granted as a read-only search scope) is the
     lighter-weight alternative.
 
+.PARAMETER MigrateLegacy
+    Moves a legacy in-repo cocopilot mailbox (<RepoPath>\.mailbox, from an
+    older cocopilot) into the target's pair directory, byte for byte:
+    epoch, log generation, cursor offsets, baselines, verify-request.md
+    and sessions.json stay exactly as they were. Needs -AgentsStopped and
+    combines with no other switch. It refuses, changing nothing, when the
+    folder is not cocopilot's, is a link, holds anything git tracks or
+    anything cocopilot does not create, holds implementer.lock or
+    sessions.lock, changes while it is checked, or when a different pair
+    directory already exists. The copy is staged and verified, published
+    with one directory rename, and only then are the originals deleted,
+    each after a last comparison with its published copy. An interrupted
+    run is completed by running the same command again. Finally the
+    managed exclude rule is removed and the empty .mailbox folder deleted.
+
+.PARAMETER AgentsStopped
+    Confirms that both agents of the pair are stopped. Required with
+    -MigrateLegacy: a running agent could write to the legacy mailbox
+    while it moves.
+
 .EXAMPLE
     .\scripts\init-mailbox.ps1 -RepoPath C:\Repos\some-other-project
+
+.EXAMPLE
+    .\scripts\init-mailbox.ps1 -RepoPath C:\Repos\some-other-project -MigrateLegacy -AgentsStopped
 #>
 param(
     [string]$RepoPath = (Get-Location).Path,
@@ -98,12 +120,17 @@ param(
     [string]$OwnerModel = "unknown",
     [switch]$Force,
     [switch]$AcknowledgeHistory,
-    [switch]$AllowNonGit
+    [switch]$AllowNonGit,
+    [switch]$MigrateLegacy,
+    [switch]$AgentsStopped,
+    # How long the legacy files must stay unchanged before -MigrateLegacy
+    # copies them; lowered by tests only.
+    [Parameter(DontShow)][ValidateRange(0, 600)][int]$QuiescenceSeconds = 5
 )
 
 $ErrorActionPreference = "Stop"
-# Expected non-zero git exits (e.g. check-ignore's 1 = "not ignored") are
-# read from $LASTEXITCODE, whatever the caller's profile sets here.
+# Expected non-zero git exits (e.g. rev-parse HEAD before the first commit)
+# are read from $LASTEXITCODE, whatever the caller's profile sets here.
 $PSNativeCommandUseErrorActionPreference = $false
 
 . (Join-Path $PSScriptRoot "_common.ps1")
@@ -121,7 +148,21 @@ if (Test-IsCocopilotInstall -Path $RepoPath -CocopilotRoot $cocopilotRoot) {
         "git -C '$cocopilotRoot' worktree add ..\cocopilot-dev; then run this there.")
 }
 
-$mailboxDir = Join-Path $RepoPath ".mailbox"
+if ($MigrateLegacy -or $AgentsStopped) {
+    if (-not ($MigrateLegacy -and $AgentsStopped)) {
+        throw ("-MigrateLegacy and -AgentsStopped belong together: stop both agents of the pair first, then run " +
+            "init-mailbox.ps1 -MigrateLegacy -AgentsStopped. Nothing was changed.")
+    }
+    if ($Force -or $AcknowledgeHistory -or $PSBoundParameters.ContainsKey("Owner") -or $PSBoundParameters.ContainsKey("OwnerModel")) {
+        throw "-MigrateLegacy moves the mailbox unchanged, so it combines with no other init switch. Nothing was changed."
+    }
+    Move-CocopilotLegacyMailbox -RepoPath $RepoPath -QuiescenceSeconds $QuiescenceSeconds
+    return
+}
+
+$mailboxDir = Open-CocopilotMailbox -RepoPath $RepoPath -ForInit
+$canonicalTarget = Get-CocopilotCanonicalPath -Path $RepoPath
+$targetRecordPath = Join-Path $mailboxDir "target.json"
 $implementerPath = Join-Path $mailboxDir "implementer.json"
 $lanePaths = @("agent-a.md", "agent-b.md") | ForEach-Object { Join-Path $mailboxDir $_ }
 $sessionLogPath = Join-Path $mailboxDir "session.log.md"
@@ -130,26 +171,17 @@ $laneTemplate = Join-Path $cocopilotRoot "templates\lane.example.md"
 
 $isGitRepo = Test-CocopilotGitRepository -Path $RepoPath
 
-if ($isGitRepo) {
-    $tracked = @(Get-CocopilotTrackedMailboxPaths -RepoPath $RepoPath)
-    if ($tracked.Count -gt 0) {
-        throw ("git tracks files under .mailbox/ in '$RepoPath' ($($tracked -join ', ')). That content is not " +
-            "cocopilot's per-machine state; refusing to write into it.")
-    }
-} elseif (-not $AllowNonGit) {
+if (-not $isGitRepo -and -not $AllowNonGit) {
     throw ("'$RepoPath' is not a git repository. Pass -AllowNonGit to pair directly on this " +
         "workspace root (its ownership anchors then rely on dirty_manifest instead of git " +
         "HEAD/status - see COLLABORATION.md 'Ownership handoff'). If you only need read-only " +
         "cross-repo context while writing to just ONE child repo, start-agents.ps1 -ContextRoot " +
         "is the lighter-weight alternative.")
-} else {
-    Write-Warning "$RepoPath is not a git repository (-AllowNonGit): head will read the fixed sentinel 'non-git-root', no git ignore rule is added, and handoff.ps1 computes the dirty manifest against the baseline for the whole root - see COLLABORATION.md 'Non-git workspace roots'. Make sure .mailbox/ never gets committed here."
+} elseif (-not $isGitRepo) {
+    Write-Warning "$RepoPath is not a git repository (-AllowNonGit): head will read the fixed sentinel 'non-git-root', and handoff.ps1 computes the dirty manifest against the baseline for the whole root - see COLLABORATION.md 'Non-git workspace roots'."
 }
 
 if (Test-Path -LiteralPath $mailboxDir) {
-    if (([System.IO.File]::GetAttributes($mailboxDir)).HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
-        throw "$mailboxDir is a reparse point (symlink/junction/mount point) - cocopilot never creates .mailbox/ that way; refusing to write through it."
-    }
     $foreign = @(Get-ChildItem -LiteralPath $mailboxDir -Force | Where-Object {
             -not (Test-CocopilotMailboxEntryName -Name $_.Name)
         })
@@ -157,10 +189,25 @@ if (Test-Path -LiteralPath $mailboxDir) {
         throw ("'$mailboxDir' already holds entries cocopilot does not create ($($foreign.Name -join ', ')) - " +
             "refusing to mix cocopilot state into it.")
     }
-    # Known names prove nothing: each existing file must be a file, and an
-    # existing record or log must hold cocopilot content, before anything is
-    # adopted or overwritten - even with -Force. Missing files stay
-    # recoverable (an interrupted init is completed on re-run).
+    # A pair directory is adopted only when it is empty or its target.json
+    # names this very target: known file names alone never prove whose
+    # mailbox it is.
+    if (Test-Path -LiteralPath $targetRecordPath -PathType Container) {
+        throw "'$targetRecordPath' exists but is not a file - refusing to initialize over it."
+    }
+    $recordedTarget = Read-CocopilotPairTarget -MailboxDir $mailboxDir
+    if ($null -ne $recordedTarget -and $recordedTarget -ine $canonicalTarget) {
+        throw ("'$mailboxDir' belongs to '$recordedTarget', not to '$canonicalTarget' - refusing to adopt or " +
+            "overwrite it, even with -Force.")
+    }
+    if ($null -eq $recordedTarget -and @(Get-ChildItem -LiteralPath $mailboxDir -Force).Count -gt 0) {
+        throw ("'$mailboxDir' holds cocopilot files but no target.json, so it cannot be proven to belong to " +
+            "'$canonicalTarget' - refusing to adopt it, even with -Force.")
+    }
+    # Each existing file must be a file, and an existing record or log must
+    # hold cocopilot content, before anything is adopted or overwritten -
+    # even with -Force. Missing files stay recoverable (an interrupted init
+    # is completed on re-run).
     foreach ($name in Get-CocopilotMailboxFileNames) {
         $known = Join-Path $mailboxDir $name
         if (-not (Test-Path -LiteralPath $known)) { continue }
@@ -176,28 +223,28 @@ if (Test-Path -LiteralPath $mailboxDir) {
     }
 }
 
-# Safety net FIRST - before anything under .mailbox/ exists: keep the
-# per-machine mailbox out of the target repo's history through the
-# git-local exclude file, never through the tracked .gitignore.
-if ($isGitRepo) {
-    $null = git -C $RepoPath check-ignore -q -- .mailbox/ 2>$null
-    if ($LASTEXITCODE -gt 1) { throw "git check-ignore failed in '$RepoPath' (exit $LASTEXITCODE)." }
-    if ($LASTEXITCODE -eq 1) {
-        $excludeTarget = Add-CocopilotMailboxExcludeRule -RepoPath $RepoPath
-        if ($excludeTarget) {
-            Write-Host "Added the ignore rule $($excludeTarget.Rule) to $($excludeTarget.Path)" -ForegroundColor Green
-        }
-        # Proof, not assumption: git itself must now ignore this exact
-        # .mailbox/ before any mailbox state is created.
-        $null = git -C $RepoPath check-ignore -q -- .mailbox/ 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            throw "git still does not ignore '$mailboxDir' after adding cocopilot's exclude rule - refusing to create mailbox state that could be committed."
-        }
+# Created one level at a time, so a pairs folder or pair directory that
+# became a reparse point after Open-CocopilotMailbox checked is still refused
+# before anything is written through it. The state root is canonical.
+$pairsDir = Split-Path -Parent $mailboxDir
+[System.IO.Directory]::CreateDirectory((Split-Path -Parent $pairsDir)) | Out-Null
+foreach ($directory in @($pairsDir, $mailboxDir)) {
+    [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+    if (Test-CocopilotReparsePoint -Path $directory) {
+        throw "'$directory' is a reparse point (symbolic link, junction or mount point); refusing to write cocopilot state through it."
     }
 }
 
-[System.IO.Directory]::CreateDirectory($mailboxDir) | Out-Null
-
+# target.json FIRST: every later file in this directory is provably this
+# target's, also when init is interrupted.
+if (-not (Test-Path -LiteralPath $targetRecordPath)) {
+    $targetRecord = [ordered]@{
+        target     = $canonicalTarget
+        createdUtc = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    Write-MailboxJson -Path $targetRecordPath -Object $targetRecord
+    Write-Host "Wrote $targetRecordPath (mailbox for $canonicalTarget)" -ForegroundColor Green
+}
 $head = if ($isGitRepo) { "0000000000000000000000000000000000000000" } else { "non-git-root" }
 if ($isGitRepo) {
     # A repository without commits makes rev-parse exit non-zero, so the zero

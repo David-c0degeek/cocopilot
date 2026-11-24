@@ -20,12 +20,25 @@ function copilot-sol {
     copilot --model gpt-6.1-sol --effort medium --context long_context --autopilot --allow-all @args
 }
 
+function Get-CocopilotProfileMailboxDir {
+    # The target's mailbox directory, resolved by cocopilot's own resolver in
+    # a child scope, so its helper functions never land in the caller's
+    # session.
+    param([Parameter(Mandatory)][string]$RepoPath)
+    $resolvedRepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
+    return & {
+        param($commonScript, $target)
+        . $commonScript
+        Get-CocopilotMailboxDir -RepoPath $target
+    } (Join-Path $script:CocopilotRoot "scripts\_common.ps1") $resolvedRepoPath
+}
+
 function Initialize-CocopilotMailboxIfMissing {
     param(
         [Parameter(Mandatory)][string]$RepoPath,
         [switch]$AllowNonGit
     )
-    $mailboxDir = Join-Path $RepoPath ".mailbox"
+    $mailboxDir = Get-CocopilotProfileMailboxDir -RepoPath $RepoPath
     # Only the core files: a missing delivery cursor must stay missing, so
     # that agent's first watch replays the log instead of skipping it.
     $required = @("implementer.json", "agent-a.md", "agent-b.md", "session.log.md") |
@@ -106,10 +119,12 @@ function cocopilot-prompt {
     # read-only fresh-eyes role for a brand-new session. In a pair launched
     # with -Transport direct a fresh window cannot be woken by its peer:
     # restart a crashed window with `copilot --resume <its registered id>`
-    # instead (render-prompt.ps1 warns with that id). -AllowNonGit pairs
+    # instead (render-prompt.ps1 warns with that id). The mailbox lives outside
+    # the target: start such a window with --add-dir <pair dir> (the banner's
+    # Mailbox line) and --add-dir <cocopilot install>. -AllowNonGit pairs
     # directly on a workspace root that isn't itself a git repo (see
     # init-mailbox.ps1 -AllowNonGit). -Transport only asserts the pair's
-    # transport; the default "auto" follows its .mailbox/sessions.json (see
+    # transport; the default "auto" follows its mailbox's sessions.json (see
     # render-prompt.ps1 -Transport).
     param(
         [Parameter(Mandatory)][ValidateSet("a", "b", "verifier")][string]$Agent,
@@ -121,8 +136,9 @@ function cocopilot-prompt {
     if ($Agent -eq "verifier") {
         # The verifier is read-only end to end: never initialize for it. It
         # needs the ownership record and the pinned VERIFY_REQUEST.
+        $mailboxDir = Get-CocopilotProfileMailboxDir -RepoPath $RepoPath
         $missing = @(@("implementer.json", "verify-request.md") |
-                Where-Object { -not (Test-Path -LiteralPath (Join-Path $RepoPath ".mailbox\$_")) })
+                Where-Object { -not (Test-Path -LiteralPath (Join-Path $mailboxDir $_)) })
         if ($missing.Count -gt 0) {
             throw "No pinned VERIFY_REQUEST at '$RepoPath' (missing: $($missing -join ', ')) - the active implementer posts one with write-lane.ps1 -VerifyRequest. Nothing was copied."
         }
@@ -137,23 +153,29 @@ function cocopilot-prompt {
 }
 
 function cocopilot-cleanup {
-    # Removes cocopilot's .mailbox/ files and ignore rule from
-    # $RepoPath. -WhatIf previews and -Confirm asks before each removal.
-    # With -Recurse, treats $RepoPath as a search root and cleans up every
-    # repository with a .mailbox/ found at or below it (e.g. run in C:\Repos
-    # to clean every paired repo underneath).
+    # Removes $RepoPath's cocopilot mailbox (its pair directory outside the
+    # target, and a legacy in-repo .mailbox/ with its ignore rule). -WhatIf
+    # previews and -Confirm asks before each removal. With -Recurse, treats
+    # $RepoPath as a search root and cleans up every repository with a
+    # legacy .mailbox/ found at or below it (e.g. run in C:\Repos to clean
+    # every paired repo underneath, and every pair directory whose target
+    # lies there). -List shows every pair directory
+    # read-only; -PairId cleans one by its id, for a moved or deleted target.
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [string]$RepoPath = (Get-Location).Path,
-        [switch]$Recurse
+        [switch]$Recurse,
+        [switch]$List,
+        [string]$PairId
     )
     # cleanup-mailbox.ps1 asks ShouldProcess itself. Only an explicitly given
     # -WhatIf or -Confirm (also :$false) is passed on, so an omitted one
     # never overrides the caller's $WhatIfPreference or $ConfirmPreference.
-    $safetySwitches = @{}
-    if ($PSBoundParameters.ContainsKey("WhatIf")) { $safetySwitches.WhatIf = $PSBoundParameters["WhatIf"] }
-    if ($PSBoundParameters.ContainsKey("Confirm")) { $safetySwitches.Confirm = $PSBoundParameters["Confirm"] }
-    & (Join-Path $script:CocopilotRoot "scripts\cleanup-mailbox.ps1") -RepoPath $RepoPath -Recurse:$Recurse @safetySwitches
+    $forwarded = @{}
+    if ($PSBoundParameters.ContainsKey("WhatIf")) { $forwarded.WhatIf = $PSBoundParameters["WhatIf"] }
+    if ($PSBoundParameters.ContainsKey("Confirm")) { $forwarded.Confirm = $PSBoundParameters["Confirm"] }
+    if ($PSBoundParameters.ContainsKey("PairId")) { $forwarded.PairId = $PairId }
+    & (Join-Path $script:CocopilotRoot "scripts\cleanup-mailbox.ps1") -RepoPath $RepoPath -Recurse:$Recurse -List:$List @forwarded
 }
 
 function cocopilot-update {

@@ -10,7 +10,10 @@
     want to paste a role prompt into an already-running `copilot` window
     manually (see README.md) rather than having start-agents.ps1 launch it
     for you — e.g. to add a second agent to a session you already opened by
-    hand.
+    hand. The mailbox lives outside the target, so launch such a window
+    with --add-dir <pair dir> (the banner's Mailbox line shows it) and
+    --add-dir <cocopilot install>; the same holds for a fresh verifier
+    session and for copilot --resume <id>.
 
 .PARAMETER Agent
     Which role to render: "a", "b", or "verifier" (the read-only fresh-eyes
@@ -29,7 +32,7 @@
     Which waiting guidance and banner commands to render: "mailbox" (the
     background watch) or "direct" (native peer messages, see
     start-agents.ps1 -Transport). The pair's registration decides: direct
-    when .mailbox/sessions.json fits this target and Copilot configuration
+    when the mailbox's sessions.json fits this target and Copilot configuration
     directory, mailbox when there is none. "auto" (the default) follows it;
     an explicit value only asserts it. Any mismatch, or a registration that
     exists but does not fit, stops with the reason, so the two agents of a
@@ -56,6 +59,7 @@ $ErrorActionPreference = "Stop"
 $RepoPath = (Resolve-Path -LiteralPath $RepoPath).Path
 if ($ContextRoot) { $ContextRoot = (Resolve-Path -LiteralPath $ContextRoot).Path }
 $cocopilotRoot = Split-Path -Parent $PSScriptRoot
+$mailboxDir = Open-CocopilotMailbox -RepoPath $RepoPath
 switch ($Agent) {
     "a"        { $agentRole = "agent-a" }
     "b"        { $agentRole = "agent-b" }
@@ -70,18 +74,18 @@ if ($agentRole -eq "verifier") {
     # with, or a direct agent could wait forever for a hint its mailbox peer
     # never sends. Rendering only checks this; it never changes the
     # registration. Only start-agents.ps1 registers or removes it.
-    $probe = Get-CocopilotPeerNotification -MailboxDir (Join-Path $RepoPath ".mailbox") -RepoPath $RepoPath -Role $agentRole -ConfigDir (Get-CocopilotConfigDir)
+    $probe = Get-CocopilotPeerNotification -MailboxDir $mailboxDir -RepoPath $RepoPath -Role $agentRole -ConfigDir (Get-CocopilotConfigDir)
     $relaunch = "Relaunch the pair with start-agents.ps1 -Transport mailbox or -Transport direct."
     switch ($probe.State) {
         "None" {
             if ($Transport -eq "direct") {
-                throw "Cannot render the direct transport: there is no .mailbox\sessions.json for this pair. $relaunch"
+                throw "Cannot render the direct transport: there is no sessions.json in this pair's mailbox ($mailboxDir). $relaunch"
             }
             $Transport = "mailbox"
         }
         "Ready" {
             if ($Transport -eq "mailbox") {
-                throw "Cannot render the mailbox transport: this pair is registered for the direct transport (.mailbox\sessions.json), so its peer would never be woken. $relaunch"
+                throw "Cannot render the mailbox transport: this pair is registered for the direct transport ($mailboxDir\sessions.json), so its peer would never be woken. $relaunch"
             }
             $Transport = "direct"
         }
@@ -93,7 +97,7 @@ $rolePrompt = Get-CocopilotRolePrompt -CocopilotRoot $cocopilotRoot -AgentRole $
 $banner = Get-CocopilotSessionBanner -RepoPath $RepoPath -CocopilotRoot $cocopilotRoot -AgentRole $agentRole -ContextRoot $ContextRoot -Transport $Transport
 if ($Transport -eq "direct") {
     # The warning stream, so it never becomes part of the copied prompt.
-    $ownId = (Read-CocopilotSessionRegistration -MailboxDir (Join-Path $RepoPath ".mailbox")).Record.agents.$agentRole.sessionId
+    $ownId = (Read-CocopilotSessionRegistration -MailboxDir $mailboxDir).Record.agents.$agentRole.sessionId
     Write-Warning ("This direct-transport prompt works only in the Copilot session $ownId, the one the pair registered. " +
         "A new window gets another session id, so its peer could not wake it: restart a closed window with " +
         "'copilot --resume $ownId' instead, or relaunch the pair.")

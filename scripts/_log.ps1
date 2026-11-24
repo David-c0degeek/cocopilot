@@ -214,3 +214,56 @@ function Get-CocopilotLogGeneration {
     $hash = [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($immutableStart))
     return [Convert]::ToHexString($hash).ToLowerInvariant().Substring(0, 32)
 }
+
+function Get-CocopilotDeliveryScan {
+    <#
+    .SYNOPSIS
+        Splits the log after $From into what a reader in $Role is delivered
+        (peer and init entries), which offsets an ACK may name, and how far
+        the delivered and own entries reach.
+
+    .DESCRIPTION
+        A cursor inside an entry yields a Fragment: text that reached that
+        entry after an unmarked tail had settled and was acknowledged. An
+        unmarked last entry that ends the text is held back (HeldBack,
+        HeldBackEntry) until $TailSettled, because its writer may still be
+        appending. watch-mailbox.ps1 and mailbox-status.ps1 share this, so
+        the status index counts exactly what a read would deliver.
+    #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)][long]$From,
+        [Parameter(Mandatory)][bool]$TailSettled,
+        [Parameter(Mandatory)][ValidateSet("agent-a", "agent-b")][string]$Role
+    )
+
+    $segments = [System.Collections.Generic.List[object]]::new()
+    foreach ($entry in @(Get-CocopilotLogEntries -Text $Text)) {
+        if ($entry.End -le $From) { continue }
+        if ($entry.Start -lt $From) {
+            $segments.Add([pscustomobject]@{
+                    Stamp = $entry.Stamp; Role = $entry.Role; Start = $From; End = $entry.End; Kind = "Fragment"
+                    Body  = $Text.Substring([int]$From, [int]($entry.End - $From)).Trim("`r", "`n")
+                })
+            continue
+        }
+        $segments.Add($entry)
+    }
+
+    $heldBack = $null
+    if ($segments.Count -gt 0) {
+        $last = $segments[$segments.Count - 1]
+        if ($last.Kind -ne "Complete" -and $last.End -eq $Text.Length -and -not $TailSettled) {
+            $heldBack = $last
+            $segments.RemoveAt($segments.Count - 1)
+        }
+    }
+
+    return [pscustomobject]@{
+        Deliver       = @($segments | Where-Object { $_.Role -ne $Role })
+        AckBoundaries = @($segments | ForEach-Object { [long]$_.End })
+        AckOffset     = if ($segments.Count -gt 0) { [long]$segments[$segments.Count - 1].End } else { $From }
+        HeldBack      = $null -ne $heldBack
+        HeldBackEntry = $heldBack
+    }
+}
