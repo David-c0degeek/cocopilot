@@ -617,7 +617,7 @@ scripts/
   render-prompt.ps1           print a role prompt for manual paste
   cleanup-mailbox.ps1         remove cocopilot's footprint from a target
 tests/
-  Cocopilot.Tests.ps1         Pester 5 suite (371 tests, pwsh 7.4+)
+  Cocopilot.Tests.ps1         Pester 5 suite (372 tests, pwsh 7.4+)
 ```
 
 The real mailbox state lives in the pair directories under the state root, never inside a target repo; cocopilot's own
@@ -626,7 +626,7 @@ pairing target too.
 
 ## Tests
 
-371 black-box Pester 5 tests cover init, the external mailbox store (canonical paths and pair ids through
+372 black-box Pester 5 tests cover init, the external mailbox store (canonical paths and pair ids through
 junctions and letter case, state root checks, refusals of linked, foreign or unproven pair directories, and the
 byte-for-byte `-MigrateLegacy` move of an in-repo mailbox, including resumed runs), legacy git-local ignore rules
 (including non-ASCII paths under an OEM console code page), watcher wake/no-wake behavior, lossless log delivery
@@ -669,7 +669,7 @@ folder. Run fail-closed from the repo root (copy/paste as-is):
 pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; $p = Import-Module Pester -MinimumVersion 5.0 -MaximumVersion 5.999 -Force -PassThru; if ($p.Version.Major -ne 5) { throw "Pester 5 required" }; $c = New-PesterConfiguration; $c.Run.Path = "tests"; $c.Run.Exit = $true; Invoke-Pester -Configuration $c'
 ```
 
-For quick feedback while you work, run the fast subset. It runs the 217 tests without the `Slow` tag and skips the
+For quick feedback while you work, run the fast subset. It runs the 218 tests without the `Slow` tag and skips the
 other 154 tests. It never replaces the full run above, which stays the check before any commit.
 
 ```powershell

@@ -21,7 +21,9 @@ function Get-CocopilotContentHash {
     .SYNOPSIS
         SHA-256 (lowercase hex) of one file, counted against the fingerprint
         budget. Past the budget it hashes nothing, marks the fingerprint
-        incomplete and returns "unhashed".
+        incomplete and returns "unhashed". A file that cannot be opened (held
+        exclusively by another process) also marks the fingerprint incomplete
+        and returns "unreadable".
     #>
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -39,7 +41,16 @@ function Get-CocopilotContentHash {
     $Budget.Files++
     $Budget.Bytes += $size
     $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
-    $stream = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+    try {
+        $stream = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+    } catch {
+        # A file another process holds exclusively (e.g. NTUSER.DAT) cannot be proven unchanged.
+        if ($Budget.Complete) {
+            $Budget.Complete = $false
+            $Budget.Reason = "cannot read '$Path': $((Get-CocopilotInnerException -Exception $_.Exception).Message)"
+        }
+        return "unreadable"
+    }
     try {
         return [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()
     } finally {
@@ -174,7 +185,7 @@ function Get-CocopilotWorkspaceFingerprint {
         with its size and SHA-256. The root's .mailbox/ is skipped, and so is
         the cocopilot state root when it lies inside the target; a link
         is recorded, never followed. Complete is false - and a handoff then
-        refuses - when a directory cannot be listed or more than -MaxFiles
+        refuses - when a directory cannot be listed, a file cannot be read, or more than -MaxFiles
         files or -MaxBytes bytes would have to be hashed.
     #>
     param(

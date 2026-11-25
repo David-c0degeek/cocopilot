@@ -926,6 +926,22 @@ Describe "handoff.ps1 and handoff baselines" {
         @($capped.Facts.Values | Where-Object { $_ -like "* unhashed" }).Count | Should -BeGreaterThan 0
     }
 
+    It "marks the capture incomplete instead of failing when a file is locked" {
+        $root = Join-Path $TestDrive "fingerprint-locked"
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        $lockedPath = Join-Path $root "locked.dat"
+        [System.IO.File]::WriteAllText($lockedPath, "12345678", $script:utf8NoBom)
+        $lock = [System.IO.FileStream]::new($lockedPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        try {
+            $fingerprint = Get-CocopilotWorkspaceFingerprint -RepoPath $root
+        } finally {
+            $lock.Dispose()
+        }
+        $fingerprint.Complete | Should -BeFalse
+        $fingerprint.Reason | Should -Match "cannot read '.*locked\.dat'"
+        $fingerprint.Facts["file|locked.dat"] | Should -Be "8 unreadable"
+    }
+
     It "hands ownership over: the offer lists every change, the accept moves the epoch and the baseline" -Tag Slow {
         $t = New-CommittedTarget "handoff-happy"
         $mailbox = Get-TestMailboxDir $t

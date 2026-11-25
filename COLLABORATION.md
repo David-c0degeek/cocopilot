@@ -201,8 +201,9 @@ state.
    stop; the user resolves ownership after the tree is inspected.
 
 Offer and Accept refuse while the state can only be partly captured: more
-than 20,000 changed or unversioned files or 512 MB to hash, or a directory
-that cannot be listed. A handoff never transfers authority on a manifest
+than 20,000 changed or unversioned files or 512 MB to hash, a directory
+that cannot be listed, or a file that cannot be read (locked by another
+process). A handoff never transfers authority on a manifest
 that cannot be proven complete.
 
 ### Non-git workspace roots
